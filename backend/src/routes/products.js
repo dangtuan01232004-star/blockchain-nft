@@ -83,7 +83,7 @@ router.post("/record", requireAuth, async (req, res) => {
       tokenURI,
       txHash,
       mintedBy: (mintedBy || "").toLowerCase(), // địa chỉ ví đã ký mint — dùng để hiển thị "Sản phẩm của tôi"
-      qrCodeUrl: `${process.env.PUBLIC_BASE_URL || "http://localhost:4000"}/qrcodes/${tokenId}.png`,
+      qrCodeUrl: `${process.env.PUBLIC_BASE_URL || "https://blockchain-nft-frontend.vercel.app/"}/qrcodes/${tokenId}.png`,
       verifyUrl: qr.verifyUrl,
       mintedAt: new Date().toISOString(),
     };
