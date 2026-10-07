@@ -10,6 +10,6 @@
  *   Đây là nơi DUY NHẤT cần sửa — mọi trang (verify.html, admin.html) đều
  *   đọc từ đây, không cần sửa nhiều nơi.
  */
-const PROD_API_BASE = ""; // <-- Điền URL backend Render vào đây sau khi deploy
+const PROD_API_BASE = "https://blockchain-nft-216z.onrender.com";
 
 window.API_BASE = PROD_API_BASE || `http://${window.location.hostname}:4000`;
