@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quản trị — Con Dấu Số</title>
+<link rel="stylesheet" href="css/styles.css">
+<script src="js/config.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.0/dist/ethers.umd.min.js"></script>
+</head>
+<body class="app-theme">
+
+<script>
+  // Gác cổng: chưa đăng nhập thì đá thẳng về trang login, không cho vào admin
+  if (!localStorage.getItem("authToken")) {
+    window.location.href = "login.html";
+  }
+</script>
+
+<div class="dash-shell">
+
+  <aside class="dash-sidebar">
+    <a href="index.html" class="brand" style="margin-bottom:28px; display:block">
+      <span class="brand-mark">CD</span>
+      Con Dấu Số
+    </a>
+
+    <div class="dash-user-block">
+      <span class="dash-hello">Xin chào</span>
+      <strong id="loggedInUser">—</strong>
+      <span class="pill" id="loggedInRole" style="margin-top:6px"></span>
+    </div>
+
+    <nav class="dash-nav">
+      <button class="dash-nav-item active" data-section="products" type="button">📦 Sản phẩm của tôi</button>
+      <button class="dash-nav-item" data-section="orders" type="button">🛒 Đơn hàng</button>
+      <button class="dash-nav-item" data-section="partners" type="button">🤝 Danh bạ đối tác</button>
+      <button class="dash-nav-item" data-section="users" type="button" id="usersNavItem" style="display:none">🛡️ Quản lý người dùng</button>
+      <a class="dash-nav-item" href="verify.html" target="_blank">🔍 Xác thực sản phẩm ↗</a>
+      <a class="dash-nav-item" href="shop.html" target="_blank">🛍️ Trang mua hàng ↗</a>
+    </nav>
+
+    <div class="dash-wallet-block" id="walletBlock">
+      <div id="walletDisconnected">
+        <p style="font-size:0.8rem; color:var(--ink-soft); margin:0 0 10px">
+          Mọi giao dịch được ký trực tiếp bằng ví của bạn — trang này không lưu private key.
+        </p>
+        <button class="btn btn-primary" id="connectBtn" style="width:100%; justify-content:center; font-size:0.85rem">Kết nối ví MetaMask</button>
+      </div>
+      <div id="walletConnected" style="display:none">
+        <span class="dash-hello">Ví đang kết nối</span>
+        <div class="mono" id="walletAddress" style="font-size:0.78rem; word-break:break-all; margin-bottom:8px"></div>
+        <div id="roleBadges" style="display:flex; gap:6px; flex-wrap:wrap"></div>
+      </div>
+    </div>
+
+    <a href="#" id="logoutLink" class="dash-nav-item" style="margin-top:auto">🚪 Đăng xuất</a>
+  </aside>
+
+  <main class="dash-main">
+
+    <section id="section-products">
+      <div class="dash-main-header">
+        <h1>Sản phẩm của tôi</h1>
+        <button class="btn btn-primary" id="openMintModal">+ Phát hành NFT mới</button>
+      </div>
+      <p class="section-sub" id="productsHint">Kết nối ví để xem sản phẩm bạn đã phát hành.</p>
+      <div class="product-grid" id="productGrid"></div>
+    </section>
+
+    <section id="section-partners" style="display:none">
+      <div class="dash-main-header">
+        <h1>Danh bạ đối tác</h1>
+      </div>
+      <p class="section-sub">Đăng ký tên + địa chỉ ví của từng đơn vị phân phối/bán lẻ — dùng để chọn nhanh khi chuyển giao, không phải gõ tay.</p>
+
+      <div class="panel" style="margin-bottom:20px">
+        <form id="partnerForm" style="display:grid; grid-template-columns:1.2fr 1.6fr 1fr auto; gap:10px; align-items:end">
+          <div class="field" style="margin-bottom:0">
+            <label>Tên đối tác</label>
+            <input type="text" id="pName" placeholder="Đại lý Hà Nội" required>
+          </div>
+          <div class="field" style="margin-bottom:0">
+            <label>Địa chỉ ví</label>
+            <input type="text" id="pAddress" placeholder="0x..." required>
+          </div>
+          <div class="field" style="margin-bottom:0">
+            <label>Vai trò</label>
+            <select id="pRole">
+              <option value="DISTRIBUTOR">Phân phối</option>
+              <option value="RETAILER">Bán lẻ</option>
+              <option value="MANUFACTURER">Sản xuất</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-outline">Thêm</button>
+        </form>
+        <div class="status-msg" id="partnerStatus"></div>
+      </div>
+
+      <table id="partnerTable">
+        <thead><tr><th>Tên</th><th>Vai trò</th><th>Địa chỉ ví</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="section-orders" style="display:none">
+      <div class="dash-main-header">
+        <h1>Đơn hàng</h1>
+      </div>
+      <p class="section-sub">
+        Đơn do người tiêu dùng đặt trực tiếp ở trang "Mua hàng" (không cần ví, không cần đăng nhập).
+        Sau khi đã liên hệ và giao hàng thực tế, cập nhật trạng thái tương ứng bên dưới.
+      </p>
+      <table id="ordersTable">
+        <thead><tr><th>Token</th><th>Sản phẩm</th><th>Người nhận</th><th>SĐT</th><th>Địa chỉ</th><th>Trạng thái</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="section-users" style="display:none">
+      <div class="dash-main-header">
+        <h1>Quản lý người dùng</h1>
+      </div>
+      <p class="section-sub">
+        Duyệt cấp quyền on-chain cho nhà cung cấp/phân phối mới đăng ký. Bấm "Cấp quyền" sẽ
+        bật MetaMask CỦA BẠN (admin) để ký giao dịch <code>grantRole()</code> thật trên smart contract
+        — trang này không tự cấp quyền hộ, chỉ ghi lại trạng thái sau khi bạn ký xong.
+      </p>
+      <table id="usersTable">
+        <thead><tr><th>Tài khoản</th><th>Vai trò đăng ký</th><th>Địa chỉ ví</th><th>Trạng thái</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+  </main>
+</div>
+
+<!-- Modal: Phát hành sản phẩm mới -->
+<div class="modal-overlay" id="mintModal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>Phát hành sản phẩm mới</h2>
+      <button class="modal-close" data-close="mintModal" type="button">✕</button>
+    </div>
+    <form id="mintForm">
+      <div class="field">
+        <label>Mã sản phẩm / SKU</label>
+        <input type="text" id="productCode" placeholder="SKU-2026-001" required>
+      </div>
+      <div class="field">
+        <label>Tên sản phẩm</label>
+        <input type="text" id="name" placeholder="Túi xách da thật XYZ" required>
+      </div>
+      <div class="field">
+        <label>Mô tả</label>
+        <textarea id="description" placeholder="Mô tả ngắn về sản phẩm..."></textarea>
+      </div>
+      <div class="field">
+        <label>Ảnh sản phẩm (URL)</label>
+        <input type="text" id="image" placeholder="https://...">
+      </div>
+      <div class="field">
+        <label>Nhà sản xuất</label>
+        <input type="text" id="manufacturer" placeholder="Công ty TNHH ABC">
+      </div>
+      <div class="field">
+        <label>Lô sản xuất</label>
+        <input type="text" id="batch" placeholder="LOT-0426">
+      </div>
+      <div class="field">
+        <label>Ảnh chụp tại bước này (tuỳ chọn)</label>
+        <input type="file" id="mintPhoto" accept="image/*" capture="environment">
+        <div class="photo-preview" id="mintPhotoPreview"></div>
+      </div>
+      <div class="field">
+        <label>Vị trí GPS</label>
+        <div style="display:flex; gap:8px; align-items:center">
+          <input type="text" id="mintGps" placeholder="Chưa lấy vị trí" readonly style="flex:1">
+          <button type="button" class="btn btn-outline" id="mintGpsBtn" style="font-size:0.8rem; padding:9px 12px; white-space:nowrap">📍 Lấy vị trí</button>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center">Phát hành NFT + tạo mã QR</button>
+    </form>
+    <div class="status-msg" id="mintStatus"></div>
+    <div class="qr-preview" id="qrPreview">
+      <img id="qrImg" alt="QR code sản phẩm">
+      <div class="tokenid" id="qrTokenId"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: Chuyển giao chuỗi cung ứng -->
+<div class="modal-overlay" id="transferModal">
+  <div class="modal-box">
+    <div class="modal-header">
+      <h2>Chuyển giao sản phẩm <span class="mono" id="transferTokenLabel"></span></h2>
+      <button class="modal-close" data-close="transferModal" type="button">✕</button>
+    </div>
+    <form id="transferForm">
+      <input type="hidden" id="tTokenId">
+      <div class="field">
+        <label>Người nhận tiếp theo</label>
+        <select id="tHolderSelect">
+          <option value="">-- Chọn đối tác từ danh bạ --</option>
+          <option value="__manual__">Nhập địa chỉ ví thủ công...</option>
+        </select>
+        <input type="text" id="tHolder" placeholder="0x..." style="display:none; margin-top:8px">
+      </div>
+      <div class="field">
+        <label>Vai trò người nhận</label>
+        <select id="tRole">
+          <option value="DISTRIBUTOR">Đơn vị phân phối</option>
+          <option value="RETAILER">Cửa hàng bán lẻ</option>
+          <option value="CONSUMER">Người tiêu dùng</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Vị trí / kho</label>
+        <input type="text" id="tLocation" placeholder="Kho trung chuyển Hà Nội" required>
+      </div>
+      <div class="field">
+        <label>Hành động</label>
+        <select id="tAction">
+          <option value="SHIPPED">Đã xuất kho / vận chuyển</option>
+          <option value="RECEIVED">Đã tiếp nhận</option>
+          <option value="SOLD">Đã bán ra</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Ảnh chụp tại bước này (tuỳ chọn)</label>
+        <input type="file" id="tPhoto" accept="image/*" capture="environment">
+        <div class="photo-preview" id="tPhotoPreview"></div>
+      </div>
+      <div class="field">
+        <label>Vị trí GPS</label>
+        <div style="display:flex; gap:8px; align-items:center">
+          <input type="text" id="tGps" placeholder="Chưa lấy vị trí" readonly style="flex:1">
+          <button type="button" class="btn btn-outline" id="tGpsBtn" style="font-size:0.8rem; padding:9px 12px; white-space:nowrap">📍 Lấy vị trí</button>
+        </div>
+      </div>
+      <button type="submit" class="btn btn-outline" style="width:100%; justify-content:center">Ghi nhận lên blockchain (ký bằng ví đang kết nối)</button>
+    </form>
+    <div class="status-msg" id="transferStatus"></div>
+  </div>
+</div>
+
+<script src="js/web3.js"></script>
+<script src="js/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Đăng nhập quản trị — Con Dấu Số</title>
+<link rel="stylesheet" href="css/styles.css">
+<script src="js/config.js"></script>
+</head>
+<body class="app-theme">
+
+<div class="topbar">
+  <div class="wrap">
+    <a href="index.html" class="brand">
+      <span class="brand-mark">CD</span>
+      Con Dấu Số
+    </a>
+    <div class="nav-links">
+      <a href="verify.html">Xác thực sản phẩm</a>
+    </div>
+  </div>
+</div>
+
+<div class="verify-shell">
+  <div class="verify-card">
+    <div class="scan-panel">
+      <h1 id="formTitle">Đăng nhập quản trị</h1>
+      <p class="hint">Đăng nhập để vào trang phát hành sản phẩm / cập nhật chuỗi cung ứng. Việc đăng nhập chỉ mở khoá giao diện — mọi giao dịch on-chain vẫn được ký bằng ví MetaMask của bạn.</p>
+
+      <form id="authForm">
+        <div class="field">
+          <label>Tên đăng nhập</label>
+          <input type="text" id="username" required autocomplete="username">
+        </div>
+        <div class="field">
+          <label>Mật khẩu</label>
+          <input type="password" id="password" required autocomplete="current-password">
+        </div>
+
+        <div id="registerFields" style="display:none">
+          <div class="field">
+            <label>Tên hiển thị</label>
+            <input type="text" id="displayName" placeholder="Công ty TNHH ABC">
+          </div>
+          <div class="field">
+            <label>Vai trò</label>
+            <select id="role">
+              <option value="manufacturer">Nhà sản xuất</option>
+              <option value="distributor">Đơn vị phân phối</option>
+              <option value="admin">Admin</option>
+            </select>
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center" id="submitBtn">Đăng nhập</button>
+      </form>
+
+      <button class="toggle-cam" id="toggleMode" type="button">Chưa có tài khoản? Đăng ký ngay</button>
+      <div class="error-note" id="errorNote"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const API_BASE = window.API_BASE || `http://${window.location.hostname}:4000`;
+  let mode = "login"; // hoặc "register"
+
+  const errorNote = document.getElementById("errorNote");
+  function showError(msg) { errorNote.textContent = msg; errorNote.classList.add("show"); }
+  function clearError() { errorNote.classList.remove("show"); errorNote.textContent = ""; }
+
+  document.getElementById("toggleMode").addEventListener("click", () => {
+    mode = mode === "login" ? "register" : "login";
+    document.getElementById("formTitle").textContent = mode === "login" ? "Đăng nhập quản trị" : "Đăng ký tài khoản mới";
+    document.getElementById("registerFields").style.display = mode === "register" ? "block" : "none";
+    document.getElementById("submitBtn").textContent = mode === "login" ? "Đăng nhập" : "Đăng ký";
+    document.getElementById("toggleMode").textContent = mode === "login" ? "Chưa có tài khoản? Đăng ký ngay" : "Đã có tài khoản? Đăng nhập";
+    clearError();
+  });
+
+  document.getElementById("authForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearError();
+    const username = document.getElementById("username").value.trim();
+    const password = document.getElementById("password").value;
+
+    const payload = { username, password };
+    if (mode === "register") {
+      payload.displayName = document.getElementById("displayName").value.trim();
+      payload.role = document.getElementById("role").value;
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/${mode}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Lỗi không xác định");
+
+      localStorage.setItem("authToken", data.token);
+      localStorage.setItem("authUser", JSON.stringify(data.user));
+      window.location.href = "admin.html";
+    } catch (err) {
+      showError(err.message);
+    }
+  });
+
+  // Nếu đã đăng nhập rồi, vào thẳng admin.html luôn không cần đăng nhập lại
+  if (localStorage.getItem("authToken")) {
+    window.location.href = "admin.html";
+  }
+</script>
+
+</body>
+</html>

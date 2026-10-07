@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Con Dấu Số — Nền tảng định danh, xác thực và truy xuất nguồn gốc bằng Blockchain</title>
+<link rel="stylesheet" href="css/styles.css">
+<script src="js/config.js"></script>
+</head>
+<body class="app-theme">
+
+<div class="topbar">
+  <div class="wrap">
+    <a href="index.html" class="brand">
+      <span class="brand-mark">CD</span>
+      Con Dấu Số
+    </a>
+    <div class="nav-links">
+      <a href="shop.html">Mua hàng</a>
+      <a href="verify.html">Xác thực sản phẩm</a>
+      <a href="admin.html">Quản trị / Nhà sản xuất</a>
+    </div>
+  </div>
+</div>
+
+<section class="hero hero-center">
+  <div class="wrap">
+    <div class="eyebrow">Blockchain × NFT × Truy xuất nguồn gốc</div>
+    <h1>Định danh, xác thực và truy xuất<br>nguồn gốc sản phẩm bằng Blockchain</h1>
+    <p class="lede">
+      Mỗi sản phẩm gắn một NFT duy nhất, không thể sao chép. Quét mã QR
+      để xác thực hàng chính hãng trong vài giây — không cần cài ứng dụng.
+    </p>
+    <div class="cta-row cta-row-center">
+      <a href="verify.html" class="btn btn-primary">Quét mã xác thực sản phẩm</a>
+      <a href="admin.html" class="btn btn-outline">Vào trang nhà sản xuất</a>
+    </div>
+  </div>
+
+  <div class="flow-diagram" aria-hidden="true">
+    <div class="wrap">
+      <img src="assets/quy-trinh-cung-ung.webp" alt="Sơ đồ quy trình: Sản xuất → Kiểm định → Xuất kho → Phân phối → Tiêu thụ" class="flow-image">
+      <div class="flow-phone">
+        <span class="seal-mini">✓</span> Quét QR xác thực tại mỗi bước
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="stats">
+  <div class="wrap stats-row">
+    <div class="stat-item">
+      <span class="stat-num" id="statProducts">—</span>
+      <span class="stat-label">Sản phẩm đã phát hành NFT</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-num" id="statPartners">—</span>
+      <span class="stat-label">Đối tác trong chuỗi cung ứng</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-num">ERC-721</span>
+      <span class="stat-label">Tiêu chuẩn NFT sử dụng</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-num">100%</span>
+      <span class="stat-label">Giao dịch ký trực tiếp bằng ví người dùng</span>
+    </div>
+  </div>
+</section>
+
+<section class="pillars">
+  <div class="wrap">
+    <h2 class="section-title">Ba trụ cột của hệ thống</h2>
+    <p class="section-sub">Định danh, xác thực và truy xuất — mỗi trụ cột ứng với một thành phần kỹ thuật cụ thể.</p>
+    <div class="pillar-grid">
+      <div class="pillar-card">
+        <span class="pillar-tag">Định danh</span>
+        <h3>Mint NFT cho từng sản phẩm</h3>
+        <p>Nhà sản xuất phát hành NFT chuẩn ERC-721 duy nhất cho mỗi sản phẩm, metadata lưu trên IPFS, gắn mã QR vật lý lên bao bì.</p>
+      </div>
+      <div class="pillar-card">
+        <span class="pillar-tag">Xác thực</span>
+        <h3>Smart contract trên Ethereum</h3>
+        <p>Mọi giao dịch (mint, chuyển giao) được ký trực tiếp bằng ví MetaMask của từng vai trò — không máy chủ trung gian nào có thể chỉnh sửa dữ liệu.</p>
+      </div>
+      <div class="pillar-card">
+        <span class="pillar-tag">Truy xuất</span>
+        <h3>Trang tra cứu công khai</h3>
+        <p>Người tiêu dùng quét QR, xem toàn bộ lịch sử chuỗi cung ứng theo thời gian thực — không cần cài ví, không tốn phí gas.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="tech">
+  <div class="wrap">
+    <h2 class="section-title">Công nghệ sử dụng</h2>
+    <p class="section-sub">Kiến trúc phi tập trung ở mọi lớp — không có điểm nào một mình backend có thể thao túng dữ liệu.</p>
+    <div class="tech-grid">
+      <div class="tech-item">
+        <h3>Nền tảng chuỗi khối</h3>
+        <p>Hợp đồng thông minh Solidity (ERC-721 + AccessControl của OpenZeppelin) triển khai trên Ethereum, đảm bảo dữ liệu minh bạch, bất biến.</p>
+      </div>
+      <div class="tech-item">
+        <h3>Lưu trữ phi tập trung IPFS</h3>
+        <p>Metadata sản phẩm (tên, mô tả, ảnh) được ghim lên IPFS qua Pinata, không phụ thuộc vào một máy chủ trung tâm duy nhất.</p>
+      </div>
+      <div class="tech-item">
+        <h3>Ký giao dịch phi tập trung</h3>
+        <p>Mỗi vai trò tự kết nối ví MetaMask và tự ký giao dịch của mình — backend không lưu giữ private key của bất kỳ ai.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Đồ án tốt nghiệp — Nghiên cứu triển khai giải pháp Blockchain kết hợp NFT chống hàng giả và truy xuất nguồn gốc trong TMĐT.
+  </div>
+</footer>
+
+<script>
+  const API_BASE = window.API_BASE || `http://${window.location.hostname}:4000`;
+  fetch(`${API_BASE}/api/products`)
+    .then((r) => r.json())
+    .then((list) => { document.getElementById("statProducts").textContent = list.length; })
+    .catch(() => { document.getElementById("statProducts").textContent = "0"; });
+  fetch(`${API_BASE}/api/partners`)
+    .then((r) => r.json())
+    .then((list) => { document.getElementById("statPartners").textContent = list.length; })
+    .catch(() => { document.getElementById("statPartners").textContent = "0"; });
+</script>
+
+</body>
+</html>

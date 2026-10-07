@@ -1,0 +1,21 @@
+{
+  "name": "traceability-smart-contracts",
+  "version": "1.0.0",
+  "description": "Smart contract ERC-721 cho hệ thống chống hàng giả và truy xuất nguồn gốc",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:gas": "REPORT_GAS=true hardhat test",
+    "deploy:local": "hardhat run scripts/deploy.js --network localhost",
+    "node": "hardhat node"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "dotenv": "^16.6.1",
+    "hardhat": "^2.19.0",
+    "hardhat-gas-reporter": "^1.0.10"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.0"
+  }
+}

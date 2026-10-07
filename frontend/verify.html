@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Xác thực sản phẩm — Con Dấu Số</title>
+<link rel="stylesheet" href="css/styles.css">
+<script src="js/config.js"></script>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body class="app-theme">
+
+<div class="topbar">
+  <div class="wrap">
+    <a href="index.html" class="brand">
+      <span class="brand-mark">CD</span>
+      Con Dấu Số
+    </a>
+    <div class="nav-links">
+      <a href="shop.html">Mua hàng</a>
+      <a href="verify.html">Xác thực sản phẩm</a>
+      <a href="admin.html">Quản trị / Nhà sản xuất</a>
+    </div>
+  </div>
+</div>
+
+<div class="verify-shell">
+  <div class="verify-card">
+
+    <div class="scan-panel">
+      <h1>Xác thực hàng chính hãng</h1>
+      <p class="hint">Đưa camera vào mã QR trên sản phẩm, hoặc nhập mã token thủ công bên dưới.</p>
+
+      <div id="qr-reader"></div>
+      <div id="qr-file-reader" style="position:absolute; left:-9999px; width:300px; height:300px;"></div>
+      <button class="toggle-cam" id="toggleCam">Tắt camera / nhập mã thủ công</button>
+
+      <div class="manual-entry">
+        <input type="text" id="tokenInput" placeholder="Nhập Token ID, ví dụ: 0" inputmode="numeric">
+        <button class="btn btn-primary" id="checkBtn">Kiểm tra</button>
+      </div>
+
+      <div class="upload-row">
+        <label class="btn btn-outline" for="qrFileInput" style="cursor:pointer">
+          Tải ảnh mã QR lên
+        </label>
+        <input type="file" id="qrFileInput" accept="image/*" style="display:none">
+        <span class="upload-hint">Dùng khi không tiện quét trực tiếp — ví dụ chụp màn hình QR rồi tải lên</span>
+      </div>
+
+      <div class="error-note" id="errorNote"></div>
+    </div>
+
+    <div class="result" id="result">
+      <div class="product-visual" id="productVisual"><span class="placeholder-icon">📦</span></div>
+      <h2 id="resultTitle"></h2>
+      <div class="verified-badge" id="verifiedBadge">
+        <span id="sealIcon"></span>
+        <span id="resultSub"></span>
+      </div>
+
+      <div class="suspicious-warning" id="suspiciousWarning" style="display:none">
+        ⚠️ <span id="suspiciousText"></span>
+      </div>
+
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="info" type="button">Thông tin sản phẩm</button>
+        <button class="tab-btn" data-tab="trace" type="button">Truy xuất nguồn gốc</button>
+      </div>
+
+      <div class="tab-panel active" id="tabInfo">
+        <div class="detail-grid">
+          <div class="detail-row"><span class="k">Mã sản phẩm</span><span class="v" id="dCode"></span></div>
+          <div class="detail-row"><span class="k">Nhà sản xuất</span><span class="v" id="dManufacturer"></span></div>
+          <div class="detail-row"><span class="k">Lô sản xuất</span><span class="v" id="dBatch"></span></div>
+          <div class="detail-row"><span class="k">Mô tả</span><span class="v" id="dDescription"></span></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tabTrace">
+        <div class="timeline">
+          <h3>Lịch sử chuỗi cung ứng (<span id="stepCount">0</span> bước)</h3>
+          <div id="timelineList"></div>
+        </div>
+        <div class="detail-grid" style="margin-top:18px">
+          <div class="detail-row"><span class="k">Token ID</span><span class="v" id="dTokenId"></span></div>
+          <div class="detail-row"><span class="k">Chủ sở hữu hiện tại</span><span class="v addr-copy" id="dOwner" title="Bấm để copy đầy đủ"></span></div>
+          <div class="detail-row"><span class="k">Metadata (IPFS)</span><span class="v" id="dUri"></span></div>
+        </div>
+      </div>
+
+      <div class="issuer-row">
+        <span class="mark">CD</span>
+        <span>Phát hành bởi <strong id="dIssuer">—</strong></span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+  // Tự nhận diện host của backend dựa theo cách trang này đang được truy cập:
+  // mở bằng "localhost" thì gọi "localhost:4000"; mở bằng IP LAN (ví dụ từ
+  // điện thoại, 192.168.x.x) thì tự động gọi đúng IP đó — không hardcode
+  // cứng "localhost", nếu không điện thoại sẽ gọi nhầm vào chính nó.
+  const API_BASE = window.API_BASE || `http://${window.location.hostname}:4000`;
+  const resultEl = document.getElementById("result");
+  const errorNote = document.getElementById("errorNote");
+
+  function showError(msg) {
+    errorNote.textContent = msg;
+    errorNote.classList.add("show");
+  }
+  function clearError() {
+    errorNote.classList.remove("show");
+    errorNote.textContent = "";
+  }
+
+  // Mỗi trình duyệt tự sinh 1 mã thiết bị ngẫu nhiên, lưu cố định trong
+  // localStorage — KHÔNG phải thông tin cá nhân, chỉ dùng để backend đếm
+  // "có bao nhiêu thiết bị khác nhau từng quét mã QR này" nhằm phát hiện
+  // dấu hiệu mã QR bị sao chép sang nhiều sản phẩm giả.
+  function getDeviceId() {
+    let id = localStorage.getItem("deviceId");
+    if (!id) {
+      id = "dev-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem("deviceId", id);
+    }
+    return id;
+  }
+
+  async function checkToken(tokenId) {
+    clearError();
+    resultEl.classList.remove("show", "authentic", "fake");
+    if (!tokenId && tokenId !== "0") {
+      showError("Vui lòng nhập Token ID hợp lệ.");
+      return;
+    }
+    try {
+      const deviceId = getDeviceId();
+      const res = await fetch(`${API_BASE}/api/products/verify/${encodeURIComponent(tokenId)}?deviceId=${encodeURIComponent(deviceId)}`);
+      const data = await res.json();
+      renderResult(data);
+    } catch (err) {
+      showError("Không thể kết nối tới máy chủ xác thực. Kiểm tra backend đã chạy chưa.");
+    }
+  }
+
+  // Che bớt địa chỉ ví — chỉ hiện 6 ký tự đầu + 4 ký tự cuối, giống cách các
+  // ứng dụng blockchain phổ biến vẫn làm (không hiện đầy đủ để tránh lộ danh
+  // tính/liên kết ví với người dùng công khai trên trang xác thực này).
+  function truncateAddress(addr) {
+    if (!addr || addr.length < 12) return addr || "-";
+    return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+  }
+
+  document.getElementById("dOwner").addEventListener("click", (e) => {
+    const full = e.target.dataset.fullAddress;
+    if (!full) return;
+    navigator.clipboard.writeText(full).then(() => {
+      const original = e.target.textContent;
+      e.target.textContent = "Đã copy!";
+      setTimeout(() => { e.target.textContent = original; }, 1200);
+    });
+  });
+
+  function renderResult(data) {
+    resultEl.classList.add("show");
+
+    const productName =
+      (data.metadata && data.metadata.name) ||
+      (data.found ? `Sản phẩm #${data.tokenId}` : "Không tìm thấy sản phẩm");
+    document.getElementById("resultTitle").textContent = productName;
+
+    const image = data.metadata && data.metadata.image;
+    document.getElementById("productVisual").innerHTML = image
+      ? `<img src="${image}" alt="">`
+      : `<span class="placeholder-icon">📦</span>`;
+
+    if (!data.found || data.authentic === false) {
+      resultEl.classList.remove("authentic");
+      resultEl.classList.add("fake");
+      document.getElementById("sealIcon").textContent = "✕";
+      document.getElementById("resultSub").textContent = data.found
+        ? "Đã bị thu hồi xác thực"
+        : "Không tìm thấy trên blockchain — nghi ngờ hàng giả";
+    } else {
+      resultEl.classList.remove("fake");
+      resultEl.classList.add("authentic");
+      document.getElementById("sealIcon").textContent = "✓";
+      document.getElementById("resultSub").textContent = "Thông tin được xác thực qua Blockchain";
+    }
+
+    // Cảnh báo quét bất thường — sản phẩm vẫn chính hãng trên blockchain
+    // (tokenId tồn tại, chưa bị thu hồi), nhưng mã QR này đã bị quét từ
+    // quá nhiều thiết bị khác nhau, dấu hiệu cho thấy có thể đã bị sao chép
+    // sang nhiều sản phẩm giả khác (xem backend/src/services/scanGuard.js).
+    const warningEl = document.getElementById("suspiciousWarning");
+    if (data.scan && data.scan.suspicious) {
+      document.getElementById("suspiciousText").textContent =
+        `Mã QR này đã được quét từ ${data.scan.distinctDevices} thiết bị khác nhau (${data.scan.totalScans} lượt) — ` +
+        `nhiều bất thường so với một sản phẩm vật lý duy nhất. Có thể mã QR đã bị sao chép sang hàng giả khác.`;
+      warningEl.style.display = "block";
+    } else {
+      warningEl.style.display = "none";
+    }
+
+    document.getElementById("dCode").textContent = data.productCode || "-";
+    document.getElementById("dManufacturer").textContent = (data.metadata && data.metadata.manufacturer) || "-";
+    document.getElementById("dBatch").textContent = (data.metadata && data.metadata.batch) || "-";
+    document.getElementById("dDescription").textContent = (data.metadata && data.metadata.description) || "-";
+    document.getElementById("dIssuer").textContent = (data.metadata && data.metadata.manufacturer) || "Không rõ";
+
+    document.getElementById("dTokenId").textContent = data.tokenId ?? "-";
+    const ownerEl = document.getElementById("dOwner");
+    ownerEl.textContent = data.owner ? truncateAddress(data.owner) : "-";
+    ownerEl.dataset.fullAddress = data.owner || "";
+    document.getElementById("dUri").textContent = data.tokenURI || "-";
+
+    const stepCountEl = document.getElementById("stepCount");
+    const list = document.getElementById("timelineList");
+    list.innerHTML = "";
+    const history = data.history || [];
+    stepCountEl.textContent = history.length;
+
+    const ACTION_LABEL_VI = {
+      MINTED: "Phát hành sản phẩm",
+      SHIPPED: "Xuất kho / vận chuyển",
+      RECEIVED: "Nhập hàng",
+      SOLD: "Bán ra",
+    };
+
+    history.forEach((h, index) => {
+      const hasDetail = Boolean(h.photoURI || h.gpsCoords);
+      const row = document.createElement("div");
+      row.className = "timeline-row" + (hasDetail ? " clickable" : "");
+      const d = new Date(h.timestamp);
+      const dateStr = d.toLocaleDateString("vi-VN");
+      const timeStr = d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+
+      row.innerHTML = `
+        <span class="timeline-check">✓</span>
+        <div class="timeline-row-content">
+          <div class="timeline-row-date">📅 ${dateStr} ${timeStr}</div>
+          <div class="timeline-row-title">${ACTION_LABEL_VI[h.action] || h.action}</div>
+          <div class="timeline-row-sub">${h.location || h.actorRole}</div>
+        </div>
+        ${hasDetail ? `<span class="timeline-chevron">›</span>` : ""}
+      `;
+      list.appendChild(row);
+
+      if (hasDetail) {
+        const detail = document.createElement("div");
+        detail.className = "timeline-detail";
+        const gpsLink = h.gpsCoords
+          ? `<a href="https://www.google.com/maps?q=${h.gpsCoords}" target="_blank">📍 Xem trên bản đồ</a>`
+          : "";
+        detail.innerHTML = `
+          ${h.photoURI ? `<img src="${h.photoURI}" alt="Ảnh chụp tại bước này" class="timeline-detail-photo">` : ""}
+          ${gpsLink}
+        `;
+        list.appendChild(detail);
+        row.addEventListener("click", () => detail.classList.toggle("show"));
+      }
+    });
+
+    // Xác thực xong luôn quay về tab "Thông tin sản phẩm" đầu tiên
+    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+    document.querySelector('.tab-btn[data-tab="info"]').classList.add("active");
+    document.getElementById("tabInfo").classList.add("active");
+  }
+
+  document.querySelectorAll(".tab-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById(btn.dataset.tab === "info" ? "tabInfo" : "tabTrace").classList.add("active");
+    });
+  });
+
+  document.getElementById("checkBtn").addEventListener("click", () => {
+    checkToken(document.getElementById("tokenInput").value.trim());
+  });
+  document.getElementById("tokenInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") checkToken(e.target.value.trim());
+  });
+
+  // Nếu URL có ?tokenId=xxx (từ mã QR), tự động kiểm tra ngay
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("tokenId") !== null) {
+    document.getElementById("tokenInput").value = params.get("tokenId");
+    checkToken(params.get("tokenId"));
+  }
+
+  // --- Quét QR bằng camera ---
+  let qrScanner = null;
+  let cameraOn = false;
+
+  function startCamera() {
+    qrScanner = new Html5Qrcode("qr-reader");
+    Html5Qrcode.getCameras().then((devices) => {
+      if (!devices || !devices.length) return;
+      qrScanner.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: 240 },
+        (decodedText) => {
+          const tid = decodeVerifyResult(decodedText);
+          document.getElementById("tokenInput").value = tid;
+          checkToken(tid);
+        },
+        () => {}
+      ).then(() => { cameraOn = true; }).catch(() => {
+        showError("Không thể mở camera. Bạn có thể nhập Token ID thủ công.");
+      });
+    }).catch(() => {
+      showError("Không tìm thấy camera trên thiết bị này. Hãy nhập Token ID thủ công.");
+    });
+  }
+
+  function stopCamera() {
+    if (qrScanner && cameraOn) {
+      qrScanner.stop().then(() => qrScanner.clear());
+      cameraOn = false;
+    }
+  }
+
+  document.getElementById("toggleCam").addEventListener("click", () => {
+    if (cameraOn) {
+      stopCamera();
+      document.getElementById("toggleCam").textContent = "Bật camera quét QR";
+    } else {
+      startCamera();
+      document.getElementById("toggleCam").textContent = "Tắt camera / nhập mã thủ công";
+    }
+  });
+
+  startCamera();
+
+  // --- Đọc QR từ ảnh tải lên (giống cơ chế "tải ảnh lên" của Google Lens) ---
+  // Hữu ích khi test trên cùng một máy: chụp màn hình mã QR ở admin.html
+  // rồi tải file ảnh lên đây, không cần điện thoại hay camera thật.
+  function decodeVerifyResult(decodedText) {
+    try {
+      const url = new URL(decodedText);
+      const tid = url.searchParams.get("tokenId");
+      if (tid !== null) return tid;
+    } catch {
+      // Không phải URL — coi luôn chuỗi quét được là tokenId
+    }
+    return decodedText;
+  }
+
+  document.getElementById("qrFileInput").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    clearError();
+
+    // Dùng một instance Html5Qrcode RIÊNG BIỆT cho việc đọc file, độc lập
+    // hoàn toàn với instance đang dùng cho camera — tránh xung đột trạng thái
+    // nội bộ giữa 2 chế độ (đã gặp lỗi "transition" nếu dùng chung 1 instance).
+    const fileScanner = new Html5Qrcode("qr-file-reader");
+    try {
+      const decodedText = await fileScanner.scanFile(file, false);
+      const tid = decodeVerifyResult(decodedText);
+      document.getElementById("tokenInput").value = tid;
+      checkToken(tid);
+    } catch (err) {
+      console.error("Lỗi đọc QR từ ảnh:", err);
+      showError(
+        "Không đọc được mã QR từ ảnh này (" + (err && err.message ? err.message : String(err)) +
+        "). Thử chụp lại rõ nét hơn, đủ viền trắng quanh mã, hoặc nhập Token ID thủ công."
+      );
+    } finally {
+      try { await fileScanner.clear(); } catch {}
+      e.target.value = ""; // cho phép chọn lại cùng 1 file lần sau
+    }
+  });
+</script>
+
+</body>
+</html>
