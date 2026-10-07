@@ -331,7 +331,7 @@ async function renderProductGrid() {
       <div class="product-card-actions">
         <a class="btn btn-outline" href="${productQRCodeURL(p)}" target="_blank" style="font-size:0.82rem; padding:8px 12px">▦ Mã QR</a>
         <button class="btn btn-primary transfer-btn" data-token="${p.tokenId}" style="font-size:0.82rem; padding:8px 12px">➤ Chuyển giao</button>
-        <a class="btn btn-outline" href="${p.verifyUrl}" target="_blank" style="font-size:0.82rem; padding:8px 10px">↗</a>
+        <a class="btn btn-outline" href="${window.getProductVerifyURL(p.tokenId)}" target="_blank" rel="noopener noreferrer" style="font-size:0.82rem; padding:8px 10px">↗</a>
       </div>
     `;
     grid.appendChild(card);
