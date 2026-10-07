@@ -131,6 +131,11 @@ a { color: inherit; }
   font-size: 0.65rem;
   color: var(--brass);
 }
+.brand-logo-img {
+  height: 34px;
+  width: auto;
+  display: block;
+}
 .nav-links { display: flex; gap: 26px; font-size: 0.92rem; }
 .nav-links a { text-decoration: none; color: var(--ink-soft); }
 .nav-links a:hover { color: var(--ink); }
