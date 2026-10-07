@@ -1,6 +1,7 @@
 // API_BASE đã được khai báo sẵn trong web3.js (load trước file này)
 let wallet = null; // { signer, address, contract, config }
 let allProducts = []; // cache toàn bộ sản phẩm lấy từ backend, lọc lại ở client
+let productLoadError = "";
 
 function showStatus(el, msg, ok) {
   el.textContent = msg;
@@ -267,6 +268,10 @@ function statusLabel(p, currentOwner) {
   return "Đã chuyển đi";
 }
 
+function productQRCodeURL(product) {
+  return new URL(product.qrCodeUrl, `${API_BASE.replace(/\/+$/, "")}/`).href;
+}
+
 async function renderProductGrid() {
   const grid = document.getElementById("productGrid");
   const hint = document.getElementById("productsHint");
@@ -276,7 +281,14 @@ async function renderProductGrid() {
     hint.textContent = "Kết nối ví để xem sản phẩm bạn đang giữ.";
     return;
   }
-  if (allProducts.length === 0) return;
+  if (productLoadError) {
+    hint.textContent = `Lỗi tải danh sách sản phẩm: ${productLoadError}`;
+    return;
+  }
+  if (allProducts.length === 0) {
+    hint.textContent = "Chưa có sản phẩm nào được mint trên smart contract này.";
+    return;
+  }
 
   hint.textContent = "Đang kiểm tra chủ sở hữu hiện tại trên blockchain...";
 
@@ -317,7 +329,7 @@ async function renderProductGrid() {
       <p class="product-card-meta">${p.batch ? "Lô " + p.batch : ""}${p.batch && p.productCode ? " · " : ""}${p.productCode || ""}</p>
       <p class="product-card-date">${new Date(p.mintedAt).toLocaleString("vi-VN")}</p>
       <div class="product-card-actions">
-        <a class="btn btn-outline" href="${p.qrCodeUrl}" target="_blank" style="font-size:0.82rem; padding:8px 12px">▦ Mã QR</a>
+        <a class="btn btn-outline" href="${productQRCodeURL(p)}" target="_blank" style="font-size:0.82rem; padding:8px 12px">▦ Mã QR</a>
         <button class="btn btn-primary transfer-btn" data-token="${p.tokenId}" style="font-size:0.82rem; padding:8px 12px">➤ Chuyển giao</button>
         <a class="btn btn-outline" href="${p.verifyUrl}" target="_blank" style="font-size:0.82rem; padding:8px 10px">↗</a>
       </div>
@@ -337,9 +349,13 @@ async function renderProductGrid() {
 async function loadProducts() {
   try {
     const res = await fetch(`${API_BASE}/api/products`);
-    allProducts = (await res.json()).map((p) => ({ ...p, mintedBy: (p.mintedBy || "").toLowerCase() }));
-  } catch {
+    const products = await res.json();
+    if (!res.ok) throw new Error(products.error || "Không tải được danh sách sản phẩm");
+    allProducts = products.map((p) => ({ ...p, mintedBy: (p.mintedBy || "").toLowerCase() }));
+    productLoadError = "";
+  } catch (err) {
     allProducts = [];
+    productLoadError = err.message;
   }
   await renderProductGrid();
 }
@@ -529,7 +545,7 @@ document.getElementById("mintForm").addEventListener("submit", async (e) => {
     if (!recordRes.ok) throw new Error(record.error || "Lỗi khi ghi nhận sản phẩm");
 
     showStatus(statusEl, `Đã phát hành thành công — Token ID #${tokenId}`, true);
-    document.getElementById("qrImg").src = record.qrCodeUrl;
+    document.getElementById("qrImg").src = productQRCodeURL(record);
     document.getElementById("qrTokenId").textContent = `Token #${tokenId} — ${tx.hash.slice(0, 14)}...`;
     document.getElementById("qrPreview").classList.add("show");
     document.getElementById("mintForm").reset();

@@ -2,8 +2,9 @@ const express = require("express");
 const multer = require("multer");
 const { getReadOnlyContract } = require("../services/blockchain");
 const { saveMetadata, savePhoto, getMetadataByTokenURI, resolvePhotoURL } = require("../services/storage");
-const { generateProductQRCode } = require("../services/qrcode");
-const { listProducts, addProduct } = require("../services/cache");
+const { generateProductQRCode, ensureProductQRCode } = require("../services/qrcode");
+const { addProduct } = require("../services/cache");
+const { listProductsFromBlockchain } = require("../services/productCatalog");
 const { requireAuth } = require("../middleware/auth");
 const { recordScan, evaluateSuspicion } = require("../services/scanGuard");
 
@@ -62,8 +63,8 @@ router.post("/metadata", requireAuth, async (req, res) => {
  * POST /api/products/record
  * Bước 2 của quy trình mint: sau khi frontend đã tự gửi giao dịch
  * mintProduct() thành công bằng ví người dùng, gọi endpoint này để backend
- * sinh mã QR (gắn đúng tokenId thật vừa được on-chain gán) và lưu vào danh
- * sách hiển thị ở trang quản trị.
+ * sinh mã QR (gắn đúng tokenId thật vừa được on-chain gán) và lưu thêm một
+ * bản cache phụ. Danh sách chính được dựng lại từ blockchain.
  * body: { tokenId, productCode, name, manufacturer, batch, tokenURI, txHash }
  */
 router.post("/record", requireAuth, async (req, res) => {
@@ -83,7 +84,7 @@ router.post("/record", requireAuth, async (req, res) => {
       tokenURI,
       txHash,
       mintedBy: (mintedBy || "").toLowerCase(), // địa chỉ ví đã ký mint — dùng để hiển thị "Sản phẩm của tôi"
-      qrCodeUrl: `${process.env.PUBLIC_BASE_URL || "https://blockchain-nft-frontend.vercel.app/"}/qrcodes/${tokenId}.png`,
+      qrCodeUrl: `/api/products/${tokenId}/qr`,
       verifyUrl: qr.verifyUrl,
       mintedAt: new Date().toISOString(),
     };
@@ -147,9 +148,24 @@ router.get("/verify/:tokenId", async (req, res) => {
   }
 });
 
-/** GET /api/products — danh sách sản phẩm đã mint (cho trang quản trị) */
-router.get("/", (req, res) => {
-  res.json(listProducts());
+/** GET /api/products — dựng danh sách từ blockchain, không phụ thuộc cache file */
+router.get("/", async (req, res) => {
+  try {
+    res.json(await listProductsFromBlockchain());
+  } catch (err) {
+    console.error("Không tải được danh sách sản phẩm từ blockchain:", err);
+    res.status(500).json({ error: err.message || "Không tải được danh sách sản phẩm" });
+  }
+});
+
+router.get("/:tokenId/qr", async (req, res) => {
+  try {
+    const qr = await ensureProductQRCode(req.params.tokenId);
+    res.sendFile(qr.filePath);
+  } catch (err) {
+    console.error("Không tạo được mã QR sản phẩm:", err);
+    res.status(500).json({ error: err.message || "Không tạo được mã QR sản phẩm" });
+  }
 });
 
 module.exports = router;

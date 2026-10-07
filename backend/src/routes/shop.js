@@ -1,20 +1,25 @@
 const express = require("express");
 const Order = require("../models/Order");
 const SearchLog = require("../models/SearchLog");
-const { listProducts } = require("../services/cache");
+const { listProductsFromBlockchain } = require("../services/productCatalog");
 const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
 
 /**
  * GET /api/shop/products
- * Danh sách sản phẩm có thể xem/mua — lấy từ cache sản phẩm đã mint.
+ * Danh sách sản phẩm có thể xem/mua — lấy từ blockchain.
  * Mỗi NFT là duy nhất (chuẩn ERC-721) nên mỗi sản phẩm hiển thị với số
  * lượng cố định là 1, đúng bản chất "một token — một sản phẩm thực".
  */
-router.get("/products", (req, res) => {
-  const products = listProducts();
-  res.json(products.map((p) => ({ ...p, quantity: 1 })));
+router.get("/products", async (req, res) => {
+  try {
+    const products = await listProductsFromBlockchain();
+    res.json(products.map((p) => ({ ...p, quantity: 1 })));
+  } catch (err) {
+    console.error("Không tải được danh sách sản phẩm cho cửa hàng:", err);
+    res.status(500).json({ error: err.message || "Không tải được danh sách sản phẩm" });
+  }
 });
 
 /**
@@ -25,14 +30,20 @@ router.get("/products", (req, res) => {
  */
 router.get("/search", async (req, res) => {
   const q = (req.query.q || "").trim();
-  const products = listProducts();
-  const results = q
-    ? products.filter(
-        (p) =>
-          (p.name || "").toLowerCase().includes(q.toLowerCase()) ||
-          (p.productCode || "").toLowerCase().includes(q.toLowerCase())
-      )
-    : products;
+  let results;
+  try {
+    const products = await listProductsFromBlockchain();
+    results = q
+      ? products.filter(
+          (p) =>
+            (p.name || "").toLowerCase().includes(q.toLowerCase()) ||
+            (p.productCode || "").toLowerCase().includes(q.toLowerCase())
+        )
+      : products;
+  } catch (err) {
+    console.error("Không tìm kiếm được sản phẩm trên blockchain:", err);
+    return res.status(500).json({ error: err.message || "Không tìm kiếm được sản phẩm" });
+  }
 
   // Ghi log tìm kiếm — không chặn phản hồi nếu MongoDB gặp sự cố
   if (q) {

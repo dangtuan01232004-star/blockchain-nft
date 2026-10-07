@@ -316,13 +316,12 @@ Tạo repo mới trên **github.com** (New repository) → làm theo hướng d�
 5. Bấm **Create Web Service** → chờ deploy xong, copy URL Render cấp
    (dạng `https://ten-project.onrender.com`)
 
-> Lưu ý gói Free của Render: ổ đĩa không đảm bảo giữ nguyên vĩnh viễn qua
-> mỗi lần deploy lại (redeploy) — ảnh QR/metadata lưu cục bộ và danh sách
-> sản phẩm/đối tác cache (`products.json`, `partners.json`) có thể mất khi
-> bạn deploy lại. Vì đã dùng Pinata (IPFS thật) nên **metadata không mất**;
-> chỉ ảnh QR cache và danh sách hiển thị ở trang quản trị có thể phải mint
-> lại nếu bạn deploy lại backend nhiều lần. Nếu cần bền vững tuyệt đối, cân
-> nhắc nâng cấp gói có Persistent Disk của Render.
+> Lưu ý gói Free của Render: file lưu cục bộ, bao gồm cache JSON, ảnh QR và
+> metadata dự phòng, có thể mất khi service khởi động lại hoặc deploy lại.
+> Danh sách sản phẩm được dựng lại từ smart contract và metadata đã pin trên
+> Pinata; mã QR cũng được tạo lại khi cần. Danh bạ đối tác vẫn đang lưu trong
+> `partners.json`, nên muốn giữ danh bạ qua các lần khởi động cần dùng MongoDB
+> hoặc Persistent Disk.
 
 ### 7.6. Deploy frontend lên Vercel
 
