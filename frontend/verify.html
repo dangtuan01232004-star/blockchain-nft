@@ -100,7 +100,7 @@
         </div>
         <div class="detail-grid" style="margin-top:18px">
           <div class="detail-row"><span class="k">Token ID</span><span class="v" id="dTokenId"></span></div>
-          <div class="detail-row"><span class="k">Chủ sở hữu hiện tại</span><span class="v addr-copy" id="dOwner" title="Bấm để copy đầy đủ"></span></div>
+          <div class="detail-row"><span class="k">Chủ sở hữu hiện tại</span><span class="v" id="dOwner"></span></div>
           <div class="detail-row"><span class="k">Metadata (IPFS)</span><span class="v" id="dUri"></span></div>
         </div>
       </div>
@@ -173,16 +173,6 @@
     return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
   }
 
-  document.getElementById("dOwner").addEventListener("click", (e) => {
-    const full = e.target.dataset.fullAddress;
-    if (!full) return;
-    navigator.clipboard.writeText(full).then(() => {
-      const original = e.target.textContent;
-      e.target.textContent = "Đã copy!";
-      setTimeout(() => { e.target.textContent = original; }, 1200);
-    });
-  });
-
   function renderResult(data) {
     resultEl.classList.add("show");
 
@@ -233,7 +223,6 @@
     document.getElementById("dTokenId").textContent = data.tokenId ?? "-";
     const ownerEl = document.getElementById("dOwner");
     ownerEl.textContent = data.owner ? truncateAddress(data.owner) : "-";
-    ownerEl.dataset.fullAddress = data.owner || "";
     document.getElementById("dUri").textContent = data.tokenURI || "-";
 
     const stepCountEl = document.getElementById("stepCount");

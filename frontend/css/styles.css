@@ -789,10 +789,6 @@ body.app-theme .result {
 }
 .timeline-detail a { font-size: 0.85rem; color: var(--brass); }
 
-/* Địa chỉ ví bị che, bấm vào để copy full */
-.addr-copy { cursor: pointer; text-decoration: underline dotted; }
-.addr-copy:hover { color: var(--brass); }
-
 .upload-row {
   margin-top: 12px;
   display: flex;
