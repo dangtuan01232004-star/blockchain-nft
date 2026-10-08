@@ -877,6 +877,15 @@ button.timeline-event:focus-visible {
   gap: 9px;
   margin: 0;
 }
+.timeline-detail-section-title {
+  margin: 16px 0 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
 .timeline-detail-row {
   display: grid;
   grid-template-columns: minmax(105px, 0.7fr) minmax(0, 1.3fr);

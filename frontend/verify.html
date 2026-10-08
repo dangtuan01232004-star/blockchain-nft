@@ -98,11 +98,6 @@
           <h3>Nguồn gốc sản phẩm <span class="timeline-count">(<span id="stepCount">0</span> bước)</span></h3>
           <div id="timelineList" class="timeline-list"></div>
         </div>
-        <div class="detail-grid" style="margin-top:18px">
-          <div class="detail-row"><span class="k">Token ID</span><span class="v" id="dTokenId"></span></div>
-          <div class="detail-row"><span class="k">Chủ sở hữu hiện tại</span><span class="v" id="dOwner"></span></div>
-          <div class="detail-row"><span class="k">Metadata (IPFS)</span><span class="v" id="dUri"></span></div>
-        </div>
       </div>
 
       <div class="issuer-row">
@@ -219,11 +214,6 @@
     document.getElementById("dBatch").textContent = (data.metadata && data.metadata.batch) || "-";
     document.getElementById("dDescription").textContent = (data.metadata && data.metadata.description) || "-";
     document.getElementById("dIssuer").textContent = (data.metadata && data.metadata.manufacturer) || "Không rõ";
-
-    document.getElementById("dTokenId").textContent = data.tokenId ?? "-";
-    const ownerEl = document.getElementById("dOwner");
-    ownerEl.textContent = data.owner ? truncateAddress(data.owner) : "-";
-    document.getElementById("dUri").textContent = data.tokenURI || "-";
 
     const stepCountEl = document.getElementById("stepCount");
     const list = document.getElementById("timelineList");
@@ -363,6 +353,31 @@
       addDetail("Vị trí GPS", "");
     }
     detail.appendChild(detailsGrid);
+
+    if (h.action === "MINTED") {
+      const identityHeading = document.createElement("h4");
+      identityHeading.className = "timeline-detail-section-title";
+      identityHeading.textContent = "Thông tin định danh sản phẩm";
+      detail.appendChild(identityHeading);
+
+      const identityGrid = document.createElement("dl");
+      identityGrid.className = "timeline-detail-grid";
+      const addIdentityDetail = (labelText, valueId, valueText) => {
+        const row = document.createElement("div");
+        row.className = "timeline-detail-row";
+        const label = document.createElement("dt");
+        label.textContent = labelText;
+        const value = document.createElement("dd");
+        value.id = valueId;
+        value.textContent = valueText || "-";
+        row.append(label, value);
+        identityGrid.appendChild(row);
+      };
+      addIdentityDetail("Token ID", "dTokenId", data.tokenId);
+      addIdentityDetail("Chủ sở hữu hiện tại", "dOwner", data.owner ? truncateAddress(data.owner) : "-");
+      addIdentityDetail("Metadata (IPFS)", "dUri", data.tokenURI);
+      detail.appendChild(identityGrid);
+    }
 
     if (h.photoURI) {
       const photo = document.createElement("img");
