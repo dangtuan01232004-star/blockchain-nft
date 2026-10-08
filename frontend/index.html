@@ -6,6 +6,14 @@
 <title>NFTTrace — Nền tảng định danh, xác thực và truy xuất nguồn gốc bằng Blockchain</title>
 <link rel="stylesheet" href="css/styles.css">
 <script src="js/config.js"></script>
+<script>
+  const productTokenId = new URLSearchParams(window.location.search).get("tokenId");
+  if (productTokenId !== null && productTokenId.trim()) {
+    const verifyUrl = new URL("/verify.html", window.location.origin);
+    verifyUrl.searchParams.set("tokenId", productTokenId);
+    window.location.replace(verifyUrl.href);
+  }
+</script>
 </head>
 <body class="app-theme">
 
