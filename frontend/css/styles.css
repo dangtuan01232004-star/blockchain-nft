@@ -865,19 +865,52 @@ button.timeline-event:focus-visible {
   grid-column: 3;
   display: none;
   min-width: 0;
-  padding: 12px 14px 14px 58px;
-  border-bottom: 1px solid var(--line);
+  margin-top: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--paper-raised);
 }
 .timeline-detail.show { display: block; animation: seal-in 0.2s ease; }
+.timeline-detail-grid {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+}
+.timeline-detail-row {
+  display: grid;
+  grid-template-columns: minmax(105px, 0.7fr) minmax(0, 1.3fr);
+  gap: 12px;
+  align-items: start;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+.timeline-detail-row dt { color: var(--ink-soft); }
+.timeline-detail-row dd {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px 12px;
+  min-width: 0;
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+.timeline-detail-row dd a {
+  color: var(--brass);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 .timeline-detail-photo {
   display: block;
   width: 100%;
   max-width: 220px;
   border-radius: 12px;
-  margin-bottom: 8px;
+  margin: 12px auto 0;
   object-fit: cover;
 }
-.timeline-detail a { font-size: 0.85rem; color: var(--brass); }
 .timeline-empty {
   margin: 0;
   padding: 18px;
@@ -898,7 +931,8 @@ button.timeline-event:focus-visible {
   .timeline-event-icon { flex-basis: 29px; width: 29px; height: 29px; }
   .timeline-event-title { font-size: 0.88rem; }
   .timeline-event-location { font-size: 0.78rem; }
-  .timeline-detail { padding-left: 48px; }
+  .timeline-detail { padding: 12px; }
+  .timeline-detail-row { grid-template-columns: minmax(88px, 0.75fr) minmax(0, 1.25fr); gap: 8px; }
 }
 
 .upload-row {

@@ -251,8 +251,14 @@
     list.appendChild(empty);
     }
 
+    const ROLE_LABEL_VI = {
+      MANUFACTURER: "Nhà sản xuất",
+      DISTRIBUTOR: "Đơn vị phân phối",
+      RETAILER: "Cửa hàng bán lẻ",
+      CONSUMER: "Người tiêu dùng",
+    };
+
     history.slice().reverse().forEach((h, index) => {
-    const hasDetail = Boolean(h.photoURI || h.gpsCoords);
     const item = document.createElement("div");
     item.className = "timeline-item";
 
@@ -275,13 +281,11 @@
     track.setAttribute("aria-hidden", "true");
     item.appendChild(track);
 
-    const card = document.createElement(hasDetail ? "button" : "div");
+    const card = document.createElement("button");
     card.className = "timeline-event";
-    if (hasDetail) {
-      card.type = "button";
-      card.setAttribute("aria-expanded", "false");
-      card.setAttribute("aria-label", `Xem chi tiết: ${ACTION_LABEL_VI[h.action] || h.action}`);
-    }
+    card.type = "button";
+    card.setAttribute("aria-expanded", "false");
+    card.setAttribute("aria-label", `Xem chi tiết: ${ACTION_LABEL_VI[h.action] || h.action}`);
 
     const icon = document.createElement("span");
     icon.className = "timeline-event-icon";
@@ -297,44 +301,84 @@
     content.append(title, location);
     card.append(icon, content);
 
-    if (hasDetail) {
-      const chevron = document.createElement("span");
-      chevron.className = "timeline-chevron";
-      chevron.setAttribute("aria-hidden", "true");
-      chevron.textContent = "›";
-      card.appendChild(chevron);
-    }
+    const chevron = document.createElement("span");
+    chevron.className = "timeline-chevron";
+    chevron.setAttribute("aria-hidden", "true");
+    chevron.textContent = "›";
+    card.appendChild(chevron);
     item.appendChild(card);
 
-    if (hasDetail) {
-      const detail = document.createElement("div");
-      detail.className = "timeline-detail";
-      detail.id = `timeline-detail-${index}`;
-      card.setAttribute("aria-controls", detail.id);
+    const detail = document.createElement("div");
+    detail.className = "timeline-detail";
+    detail.id = `timeline-detail-${index}`;
+    detail.setAttribute("aria-hidden", "true");
+    card.setAttribute("aria-controls", detail.id);
 
-      if (h.photoURI) {
-        const photo = document.createElement("img");
-        photo.src = h.photoURI;
-        photo.alt = "Ảnh chụp tại bước này";
-        photo.className = "timeline-detail-photo";
-        detail.appendChild(photo);
-      }
-      if (h.gpsCoords) {
-        const gpsLink = document.createElement("a");
-        gpsLink.href = `https://www.google.com/maps?q=${encodeURIComponent(h.gpsCoords)}`;
-        gpsLink.target = "_blank";
-        gpsLink.rel = "noopener noreferrer";
-        gpsLink.textContent = "Xem vị trí trên bản đồ";
-        detail.appendChild(gpsLink);
-      }
+    const detailsGrid = document.createElement("dl");
+    detailsGrid.className = "timeline-detail-grid";
+    const addDetail = (labelText, valueText) => {
+      const row = document.createElement("div");
+      row.className = "timeline-detail-row";
+      const label = document.createElement("dt");
+      label.textContent = labelText;
+      const value = document.createElement("dd");
+      value.textContent = valueText || "Chưa cập nhật";
+      row.append(label, value);
+      detailsGrid.appendChild(row);
+    };
+    const eventTitle = ACTION_LABEL_VI[h.action] || h.action || "Cập nhật hành trình";
+    addDetail("Bước", eventTitle);
+    addDetail("Kho / địa điểm", h.location);
+    addDetail(
+      "Ngày ghi nhận",
+      Number.isNaN(date.getTime())
+        ? ""
+        : date.toLocaleString("vi-VN", {
+            day: "2-digit",
+            month: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+    );
+    addDetail("Vai trò ghi nhận", ROLE_LABEL_VI[String(h.actorRole || "").toUpperCase()] || h.actorRole);
 
-      card.addEventListener("click", () => {
-        const expanded = card.getAttribute("aria-expanded") === "true";
-        card.setAttribute("aria-expanded", String(!expanded));
-        detail.classList.toggle("show", !expanded);
-      });
-      item.appendChild(detail);
+    if (h.gpsCoords) {
+      const row = document.createElement("div");
+      row.className = "timeline-detail-row";
+      const label = document.createElement("dt");
+      label.textContent = "Vị trí GPS";
+      const value = document.createElement("dd");
+      const coordinates = document.createElement("span");
+      coordinates.textContent = h.gpsCoords;
+      const gpsLink = document.createElement("a");
+      gpsLink.href = `https://www.google.com/maps?q=${encodeURIComponent(h.gpsCoords)}`;
+      gpsLink.target = "_blank";
+      gpsLink.rel = "noopener noreferrer";
+      gpsLink.textContent = "Xem bản đồ";
+      value.append(coordinates, gpsLink);
+      row.append(label, value);
+      detailsGrid.appendChild(row);
+    } else {
+      addDetail("Vị trí GPS", "");
     }
+    detail.appendChild(detailsGrid);
+
+    if (h.photoURI) {
+      const photo = document.createElement("img");
+      photo.src = h.photoURI;
+      photo.alt = `Ảnh ghi nhận bước: ${eventTitle}`;
+      photo.className = "timeline-detail-photo";
+      detail.appendChild(photo);
+    }
+
+    card.addEventListener("click", () => {
+      const expanded = card.getAttribute("aria-expanded") === "true";
+      card.setAttribute("aria-expanded", String(!expanded));
+      detail.setAttribute("aria-hidden", String(expanded));
+      detail.classList.toggle("show", !expanded);
+    });
+    item.appendChild(detail);
     list.appendChild(item);
     });
 
