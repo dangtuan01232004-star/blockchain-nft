@@ -505,6 +505,25 @@ footer {
   width: 100%;
   max-width: 560px;
 }
+body.product-lookup .topbar,
+body.product-lookup .scan-panel {
+  display: none;
+}
+body.product-lookup .verify-shell {
+  min-height: 100vh;
+  padding: clamp(20px, 6vh, 56px) 16px;
+}
+body.product-lookup .verify-card {
+  max-width: 680px;
+}
+body.product-lookup .result {
+  margin-top: 0;
+}
+.lookup-status {
+  margin: 0 0 16px;
+  color: var(--muted);
+  text-align: center;
+}
 .scan-panel {
   background: var(--paper-raised);
   border: 1px solid var(--line);

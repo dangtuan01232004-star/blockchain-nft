@@ -65,6 +65,8 @@
       <div class="error-note" id="errorNote"></div>
     </div>
 
+    <p class="lookup-status" id="lookupStatus" role="status" hidden>Đang tải thông tin sản phẩm...</p>
+
     <div class="result" id="result">
       <div class="product-visual" id="productVisual"><span class="placeholder-icon">📦</span></div>
       <h2 id="resultTitle"></h2>
@@ -154,8 +156,11 @@
       const deviceId = getDeviceId();
       const res = await fetch(`${API_BASE}/api/products/verify/${encodeURIComponent(tokenId)}?deviceId=${encodeURIComponent(deviceId)}`);
       const data = await res.json();
+      document.getElementById("lookupStatus").hidden = true;
       renderResult(data);
     } catch (err) {
+      document.body.classList.remove("product-lookup");
+      document.getElementById("lookupStatus").hidden = true;
       showError("Không thể kết nối tới máy chủ xác thực. Kiểm tra backend đã chạy chưa.");
     }
   }
@@ -301,12 +306,8 @@
     if (e.key === "Enter") checkToken(e.target.value.trim());
   });
 
-  // Nếu URL có ?tokenId=xxx (từ mã QR), tự động kiểm tra ngay
   const params = new URLSearchParams(window.location.search);
-  if (params.get("tokenId") !== null) {
-    document.getElementById("tokenInput").value = params.get("tokenId");
-    checkToken(params.get("tokenId"));
-  }
+  const qrTokenId = params.get("tokenId");
 
   // --- Quét QR bằng camera ---
   let qrScanner = null;
@@ -350,8 +351,6 @@
     }
   });
 
-  startCamera();
-
   // --- Đọc QR từ ảnh tải lên (giống cơ chế "tải ảnh lên" của Google Lens) ---
   // Hữu ích khi test trên cùng một máy: chụp màn hình mã QR ở admin.html
   // rồi tải file ảnh lên đây, không cần điện thoại hay camera thật.
@@ -391,6 +390,15 @@
       e.target.value = ""; // cho phép chọn lại cùng 1 file lần sau
     }
   });
+
+  if (qrTokenId !== null && qrTokenId.trim()) {
+    document.body.classList.add("product-lookup");
+    document.getElementById("tokenInput").value = qrTokenId;
+    document.getElementById("lookupStatus").hidden = false;
+    checkToken(qrTokenId);
+  } else {
+    startCamera();
+  }
 </script>
 
 </body>

@@ -219,15 +219,16 @@ mục xác thực), làm theo các bước sau:
    ```
    Ví dụ ra `192.168.1.5`.
 3. Trong `backend/.env`, đổi 2 dòng sau sang IP vừa lấy được (thay vì
-   `localhost`), vì đây là URL sẽ được **nhúng thẳng vào mã QR** lúc mint:
+   `localhost`), vì đây là URL sẽ được **nhúng thẳng vào mã QR** lúc mint.
+   Khi mở từ QR, trang sẽ tự tra cứu và chỉ hiển thị thông tin sản phẩm:
    ```
    PUBLIC_BASE_URL=http://192.168.1.5:4000
    FRONTEND_VERIFY_URL=http://192.168.1.5:5173/verify.html
    ```
    Restart backend (`Ctrl+C` rồi `npm run dev`) để áp dụng.
-4. Mint sản phẩm mới **sau khi** đã đổi `.env` — các sản phẩm mint từ
-   trước khi đổi vẫn có QR trỏ vào `localhost` cũ, không quét được từ điện
-   thoại (chỉ ảnh hưởng QR cũ, không ảnh hưởng dữ liệu blockchain).
+4. Tải lại mã QR của sản phẩm trong trang quản trị sau khi đổi `.env`.
+   Backend sẽ cập nhật ảnh QR theo URL mới; nếu mã cũ đã được in lên bao bì,
+   cần in và thay mã QR đó (không cần mint lại sản phẩm).
 5. Trên điện thoại, quét QR như bình thường — hoặc mở tay
    `http://192.168.1.5:5173/verify.html`.
 

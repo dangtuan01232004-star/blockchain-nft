@@ -5,6 +5,7 @@ smart-contracts/cache/
 smart-contracts/typechain-types/
 backend/src/data/metadata/*.json
 backend/src/data/qrcodes/*.png
+backend/src/data/qrcodes/*.url
 backend/src/data/products.json
 backend/src/data/partners.json
 backend/src/data/.last-contract-address
