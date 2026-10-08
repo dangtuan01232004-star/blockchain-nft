@@ -95,8 +95,8 @@
 
       <div class="tab-panel" id="tabTrace">
         <div class="timeline">
-          <h3>Lịch sử chuỗi cung ứng (<span id="stepCount">0</span> bước)</h3>
-          <div id="timelineList"></div>
+          <h3>Nguồn gốc sản phẩm <span class="timeline-count">(<span id="stepCount">0</span> bước)</span></h3>
+          <div id="timelineList" class="timeline-list"></div>
         </div>
         <div class="detail-grid" style="margin-top:18px">
           <div class="detail-row"><span class="k">Token ID</span><span class="v" id="dTokenId"></span></div>
@@ -237,39 +237,105 @@
       RECEIVED: "Nhập hàng",
       SOLD: "Bán ra",
     };
+    const ACTION_ICONS = {
+    MINTED: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 4l9 6.5V20H3z"/><path d="M8 20v-6h8v6M7 10h.01M12 10h.01M17 10h.01"/></svg>',
+    SHIPPED: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h11v11H3zM14 11h4l3 3v4h-7z"/><circle cx="7.5" cy="19" r="1.5"/><circle cx="18" cy="19" r="1.5"/></svg>',
+    RECEIVED: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 9 5v8l-9 5-9-5V8z"/><path d="M12 12v9M3.5 8.5 12 13l8.5-4.5M12 3v10"/></svg>',
+    SOLD: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10h16v10H4zM3 10l2-6h14l2 6M8 20v-5h8v5"/><path d="M8 7h.01M12 7h.01M16 7h.01"/></svg>',
+    };
 
-    history.forEach((h, index) => {
-      const hasDetail = Boolean(h.photoURI || h.gpsCoords);
-      const row = document.createElement("div");
-      row.className = "timeline-row" + (hasDetail ? " clickable" : "");
-      const d = new Date(h.timestamp);
-      const dateStr = d.toLocaleDateString("vi-VN");
-      const timeStr = d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+    if (!history.length) {
+    const empty = document.createElement("p");
+    empty.className = "timeline-empty";
+    empty.textContent = "Chưa có dữ liệu hành trình sản phẩm.";
+    list.appendChild(empty);
+    }
 
-      row.innerHTML = `
-        <span class="timeline-check">✓</span>
-        <div class="timeline-row-content">
-          <div class="timeline-row-date">📅 ${dateStr} ${timeStr}</div>
-          <div class="timeline-row-title">${ACTION_LABEL_VI[h.action] || h.action}</div>
-          <div class="timeline-row-sub">${h.location || h.actorRole}</div>
-        </div>
-        ${hasDetail ? `<span class="timeline-chevron">›</span>` : ""}
-      `;
-      list.appendChild(row);
+    history.slice().reverse().forEach((h, index) => {
+    const hasDetail = Boolean(h.photoURI || h.gpsCoords);
+    const item = document.createElement("div");
+    item.className = "timeline-item";
 
-      if (hasDetail) {
-        const detail = document.createElement("div");
-        detail.className = "timeline-detail";
-        const gpsLink = h.gpsCoords
-          ? `<a href="https://www.google.com/maps?q=${h.gpsCoords}" target="_blank">📍 Xem trên bản đồ</a>`
-          : "";
-        detail.innerHTML = `
-          ${h.photoURI ? `<img src="${h.photoURI}" alt="Ảnh chụp tại bước này" class="timeline-detail-photo">` : ""}
-          ${gpsLink}
-        `;
-        list.appendChild(detail);
-        row.addEventListener("click", () => detail.classList.toggle("show"));
+    const date = new Date(h.timestamp);
+    const dateColumn = document.createElement("div");
+    dateColumn.className = "timeline-date";
+    if (Number.isNaN(date.getTime())) {
+      dateColumn.textContent = "—";
+    } else {
+      const datePart = document.createElement("span");
+      datePart.textContent = date.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" });
+      const yearPart = document.createElement("span");
+      yearPart.textContent = date.toLocaleDateString("vi-VN", { year: "numeric" });
+      dateColumn.append(datePart, yearPart);
+    }
+    item.appendChild(dateColumn);
+
+    const track = document.createElement("span");
+    track.className = "timeline-track";
+    track.setAttribute("aria-hidden", "true");
+    item.appendChild(track);
+
+    const card = document.createElement(hasDetail ? "button" : "div");
+    card.className = "timeline-event";
+    if (hasDetail) {
+      card.type = "button";
+      card.setAttribute("aria-expanded", "false");
+      card.setAttribute("aria-label", `Xem chi tiết: ${ACTION_LABEL_VI[h.action] || h.action}`);
+    }
+
+    const icon = document.createElement("span");
+    icon.className = "timeline-event-icon";
+    icon.innerHTML = ACTION_ICONS[h.action] || ACTION_ICONS.RECEIVED;
+    const content = document.createElement("span");
+    content.className = "timeline-event-content";
+    const title = document.createElement("span");
+    title.className = "timeline-event-title";
+    title.textContent = ACTION_LABEL_VI[h.action] || h.action || "Cập nhật hành trình";
+    const location = document.createElement("span");
+    location.className = "timeline-event-location";
+    location.textContent = h.location || h.actorRole || "Chưa cập nhật địa điểm";
+    content.append(title, location);
+    card.append(icon, content);
+
+    if (hasDetail) {
+      const chevron = document.createElement("span");
+      chevron.className = "timeline-chevron";
+      chevron.setAttribute("aria-hidden", "true");
+      chevron.textContent = "›";
+      card.appendChild(chevron);
+    }
+    item.appendChild(card);
+
+    if (hasDetail) {
+      const detail = document.createElement("div");
+      detail.className = "timeline-detail";
+      detail.id = `timeline-detail-${index}`;
+      card.setAttribute("aria-controls", detail.id);
+
+      if (h.photoURI) {
+        const photo = document.createElement("img");
+        photo.src = h.photoURI;
+        photo.alt = "Ảnh chụp tại bước này";
+        photo.className = "timeline-detail-photo";
+        detail.appendChild(photo);
       }
+      if (h.gpsCoords) {
+        const gpsLink = document.createElement("a");
+        gpsLink.href = `https://www.google.com/maps?q=${encodeURIComponent(h.gpsCoords)}`;
+        gpsLink.target = "_blank";
+        gpsLink.rel = "noopener noreferrer";
+        gpsLink.textContent = "Xem vị trí trên bản đồ";
+        detail.appendChild(gpsLink);
+      }
+
+      card.addEventListener("click", () => {
+        const expanded = card.getAttribute("aria-expanded") === "true";
+        card.setAttribute("aria-expanded", String(!expanded));
+        detail.classList.toggle("show", !expanded);
+      });
+      item.appendChild(detail);
+    }
+    list.appendChild(item);
     });
 
     // Xác thực xong luôn quay về tab "Thông tin sản phẩm" đầu tiên
