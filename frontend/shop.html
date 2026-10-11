@@ -63,19 +63,19 @@
     <form id="orderForm">
       <div class="field">
         <label>Họ và tên người nhận</label>
-        <input type="text" id="buyerName" required>
+        <input type="text" id="buyerName" maxlength="120" required>
       </div>
       <div class="field">
         <label>Số điện thoại</label>
-        <input type="tel" id="buyerPhone" placeholder="09xxxxxxxx" required>
+        <input type="tel" id="buyerPhone" maxlength="15" placeholder="09xxxxxxxx" required>
       </div>
       <div class="field">
         <label>Địa chỉ nhận hàng</label>
-        <textarea id="buyerAddress" placeholder="Số nhà, đường, phường/xã, quận/huyện, tỉnh/thành..." required></textarea>
+        <textarea id="buyerAddress" maxlength="500" placeholder="Số nhà, đường, phường/xã, quận/huyện, tỉnh/thành..." required></textarea>
       </div>
       <div class="field">
         <label>Ghi chú (tuỳ chọn)</label>
-        <textarea id="orderNote" placeholder="Ví dụ: giao giờ hành chính..."></textarea>
+        <textarea id="orderNote" maxlength="1000" placeholder="Ví dụ: giao giờ hành chính..."></textarea>
       </div>
       <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center">Xác nhận đặt hàng</button>
     </form>
@@ -93,6 +93,10 @@
   const API_BASE = window.API_BASE || `http://${window.location.hostname}:4000`;
   let products = [];
   let selectedProduct = null;
+
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
 
   function openModal(id) { document.getElementById(id).classList.add("show"); }
   function closeModal(id) { document.getElementById(id).classList.remove("show"); }
@@ -115,14 +119,14 @@
       card.className = "product-card";
       card.innerHTML = `
         <div class="product-card-top">
-          <span class="mono" style="font-size:0.8rem; color:var(--muted)">#${p.tokenId}</span>
-          <span class="pill">Số lượng: ${p.quantity}</span>
+          <span class="mono" style="font-size:0.8rem; color:var(--muted)">#${esc(p.tokenId)}</span>
+          <span class="pill">Số lượng: ${esc(p.quantity)}</span>
         </div>
-        <h3>${p.name || "(chưa đặt tên)"}</h3>
-        <p class="product-card-meta">${p.productCode || ""}${p.manufacturer ? " · " + p.manufacturer : ""}</p>
+        <h3>${esc(p.name || "(chưa đặt tên)")}</h3>
+        <p class="product-card-meta">${esc(p.productCode || "")}${p.manufacturer ? " · " + esc(p.manufacturer) : ""}</p>
         <div class="product-card-actions">
-          <a class="btn btn-outline" href="${window.getProductVerifyURL(p.tokenId)}" target="_blank" rel="noopener noreferrer" style="font-size:0.82rem; padding:8px 12px">🔍 Xác thực</a>
-          <button class="btn btn-primary buy-btn" data-token="${p.tokenId}" style="font-size:0.82rem; padding:8px 12px">🛒 Mua ngay</button>
+          <a class="btn btn-outline" href="${esc(window.getProductVerifyURL(p.tokenId))}" target="_blank" rel="noopener noreferrer" style="font-size:0.82rem; padding:8px 12px">🔍 Xác thực</a>
+          <button class="btn btn-primary buy-btn" data-token="${esc(p.tokenId)}" style="font-size:0.82rem; padding:8px 12px">🛒 Mua ngay</button>
         </div>
       `;
       grid.appendChild(card);

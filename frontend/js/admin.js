@@ -3,6 +3,10 @@ let wallet = null; // { signer, address, contract, config }
 let allProducts = []; // cache toàn bộ sản phẩm lấy từ backend, lọc lại ở client
 let productLoadError = "";
 
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+);
+
 function showStatus(el, msg, ok) {
   el.textContent = msg;
   el.className = "status-msg show " + (ok ? "ok" : "err");
@@ -72,7 +76,7 @@ function roleBadgeHtml(label, active) {
   const style = active
     ? "background:var(--seal-verified-soft); color:var(--seal-verified)"
     : "background:var(--line); color:var(--muted)";
-  return `<span class="pill" style="${style}">${active ? "✓ " : "— "}${label}</span>`;
+  return `<span class="pill" style="${style}">${active ? "✓ " : "— "}${esc(label)}</span>`;
 }
 
 async function refreshRoleBadges(address) {
@@ -85,7 +89,7 @@ async function refreshRoleBadges(address) {
       roleBadgeHtml("Sản xuất", isManufacturer) +
       roleBadgeHtml("Phân phối", isDistributor);
   } catch (err) {
-    badges.innerHTML = `<span class="pill" style="background:var(--seal-danger-soft); color:var(--seal-danger)">Lỗi: ${err.message}</span>`;
+    badges.innerHTML = `<span class="pill" style="background:var(--seal-danger-soft); color:var(--seal-danger)">Lỗi: ${esc(err.message)}</span>`;
   }
 }
 
@@ -158,11 +162,11 @@ async function loadUsers() {
       const canApprove = u.walletAddress && u.roleStatus !== "da_duyet" && USER_ROLE_TO_CONTRACT_ROLE[u.role];
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${u.displayName || u.username}</td>
-        <td>${ROLE_LABEL_VI[u.role] || u.role}</td>
-        <td class="mono" style="font-size:0.78rem">${u.walletAddress || "—"}</td>
-        <td><span class="pill" style="${u.roleStatus === "da_duyet" ? "background:var(--seal-verified-soft); color:var(--seal-verified)" : ""}">${STATUS_LABEL_VI[u.roleStatus] || u.roleStatus}</span></td>
-        <td>${canApprove ? `<button class="btn btn-primary approve-btn" data-id="${u._id}" data-role="${u.role}" data-wallet="${u.walletAddress}" style="font-size:0.8rem; padding:6px 12px">Cấp quyền</button>` : ""}</td>
+        <td>${esc(u.displayName || u.username)}</td>
+        <td>${esc(ROLE_LABEL_VI[u.role] || u.role)}</td>
+        <td class="mono" style="font-size:0.78rem">${esc(u.walletAddress || "—")}</td>
+        <td><span class="pill" style="${u.roleStatus === "da_duyet" ? "background:var(--seal-verified-soft); color:var(--seal-verified)" : ""}">${esc(STATUS_LABEL_VI[u.roleStatus] || u.roleStatus)}</span></td>
+        <td>${canApprove ? `<button class="btn btn-primary approve-btn" data-id="${esc(u._id)}" data-role="${esc(u.role)}" data-wallet="${esc(u.walletAddress)}" style="font-size:0.8rem; padding:6px 12px">Cấp quyền</button>` : ""}</td>
       `;
       tbody.appendChild(tr);
     });
@@ -171,7 +175,7 @@ async function loadUsers() {
       btn.addEventListener("click", () => approveUser(btn.dataset.id, btn.dataset.role, btn.dataset.wallet, btn));
     });
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--seal-danger)">Lỗi: ${err.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--seal-danger)">Lỗi: ${esc(err.message)}</td></tr>`;
   }
 }
 
@@ -223,14 +227,14 @@ async function loadOrders() {
     orders.forEach((o) => {
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td class="mono">#${o.tokenId}</td>
-        <td>${o.productName || "-"}</td>
-        <td>${o.buyerName}</td>
-        <td class="mono">${o.buyerPhone}</td>
-        <td style="max-width:200px">${o.buyerAddress}</td>
-        <td><span class="pill" style="${o.status === "da_giao" ? "background:var(--seal-verified-soft); color:var(--seal-verified)" : ""}">${ORDER_STATUS_VI[o.status] || o.status}</span></td>
+        <td class="mono">#${esc(o.tokenId)}</td>
+        <td>${esc(o.productName || "-")}</td>
+        <td>${esc(o.buyerName)}</td>
+        <td class="mono">${esc(o.buyerPhone)}</td>
+        <td style="max-width:200px">${esc(o.buyerAddress)}</td>
+        <td><span class="pill" style="${o.status === "da_giao" ? "background:var(--seal-verified-soft); color:var(--seal-verified)" : ""}">${esc(ORDER_STATUS_VI[o.status] || o.status)}</span></td>
         <td>
-          <select class="order-status-select" data-id="${o._id}" style="font-size:0.8rem; padding:6px">
+          <select class="order-status-select" data-id="${esc(o._id)}" style="font-size:0.8rem; padding:6px">
             <option value="moi" ${o.status === "moi" ? "selected" : ""}>Mới đặt</option>
             <option value="da_xac_nhan" ${o.status === "da_xac_nhan" ? "selected" : ""}>Đã xác nhận</option>
             <option value="da_giao" ${o.status === "da_giao" ? "selected" : ""}>Đã giao hàng</option>
@@ -255,7 +259,7 @@ async function loadOrders() {
       });
     });
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--seal-danger)">Lỗi: ${err.message}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="color:var(--seal-danger)">Lỗi: ${esc(err.message)}</td></tr>`;
   }
 }
 
@@ -322,16 +326,16 @@ async function renderProductGrid() {
     card.className = "product-card";
     card.innerHTML = `
       <div class="product-card-top">
-        <span class="mono" style="font-size:0.8rem; color:var(--muted)">#${p.tokenId}</span>
+        <span class="mono" style="font-size:0.8rem; color:var(--muted)">#${esc(p.tokenId)}</span>
         <span class="pill">${statusLabel(p, p.currentOwner)}</span>
       </div>
-      <h3>${p.name || "(chưa đặt tên)"}</h3>
-      <p class="product-card-meta">${p.batch ? "Lô " + p.batch : ""}${p.batch && p.productCode ? " · " : ""}${p.productCode || ""}</p>
+        <h3>${esc(p.name || "(chưa đặt tên)")}</h3>
+        <p class="product-card-meta">${p.batch ? "Lô " + esc(p.batch) : ""}${p.batch && p.productCode ? " · " : ""}${esc(p.productCode || "")}</p>
       <p class="product-card-date">${new Date(p.mintedAt).toLocaleString("vi-VN")}</p>
       <div class="product-card-actions">
-        <a class="btn btn-outline" href="${productQRCodeURL(p)}" target="_blank" style="font-size:0.82rem; padding:8px 12px">▦ Mã QR</a>
-        <button class="btn btn-primary transfer-btn" data-token="${p.tokenId}" style="font-size:0.82rem; padding:8px 12px">➤ Chuyển giao</button>
-        <a class="btn btn-outline" href="${window.getProductVerifyURL(p.tokenId)}" target="_blank" rel="noopener noreferrer" style="font-size:0.82rem; padding:8px 10px">↗</a>
+          <a class="btn btn-outline" href="${esc(productQRCodeURL(p))}" target="_blank" rel="noopener noreferrer" style="font-size:0.82rem; padding:8px 12px">▦ Mã QR</a>
+          <button class="btn btn-primary transfer-btn" data-token="${esc(p.tokenId)}" style="font-size:0.82rem; padding:8px 12px">➤ Chuyển giao</button>
+          <a class="btn btn-outline" href="${esc(window.getProductVerifyURL(p.tokenId))}" target="_blank" rel="noopener noreferrer" style="font-size:0.82rem; padding:8px 10px">↗</a>
       </div>
     `;
     grid.appendChild(card);
@@ -377,7 +381,7 @@ async function loadPartners() {
   tbody.innerHTML = "";
   partners.forEach((p) => {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${p.name}</td><td>${ROLE_LABELS[p.role] || p.role}</td><td class="mono">${p.walletAddress}</td>`;
+    tr.innerHTML = `<td>${esc(p.name)}</td><td>${esc(ROLE_LABELS[p.role] || p.role)}</td><td class="mono">${esc(p.walletAddress)}</td>`;
     tbody.appendChild(tr);
   });
 
@@ -388,7 +392,7 @@ async function loadPartners() {
     ${partners
       .map(
         (p) =>
-          `<option value="${p.walletAddress}">${p.name} (${ROLE_LABELS[p.role] || p.role}) — ${p.walletAddress.slice(0, 6)}...${p.walletAddress.slice(-4)}</option>`
+          `<option value="${esc(p.walletAddress)}">${esc(p.name)} (${esc(ROLE_LABELS[p.role] || p.role)}) — ${esc(p.walletAddress.slice(0, 6))}...${esc(p.walletAddress.slice(-4))}</option>`
       )
       .join("")}
     <option value="__manual__">Nhập địa chỉ ví thủ công...</option>
@@ -463,7 +467,7 @@ function wirePhotoPreview(fileInputId, previewId) {
     const file = e.target.files[0];
     const preview = document.getElementById(previewId);
     if (!file) { preview.innerHTML = ""; return; }
-    preview.innerHTML = `<img src="${URL.createObjectURL(file)}" alt="Xem trước ảnh">`;
+    preview.innerHTML = `<img src="${esc(URL.createObjectURL(file))}" alt="Xem trước ảnh">`;
   });
 }
 wirePhotoPreview("mintPhoto", "mintPhotoPreview");

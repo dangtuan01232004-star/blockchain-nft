@@ -18,10 +18,9 @@ function signToken(user) {
  * POST /api/auth/register
  * body: { username, password, displayName, role, walletAddress }
  *
- * Lưu ý: endpoint này đang MỞ CÔNG KHAI (ai cũng đăng ký được) — phù hợp
- * cho demo/đồ án. Khi triển khai thật, nên khoá lại (chỉ admin tạo tài
- * khoản, hoặc thêm bước duyệt) để tránh người lạ tự tạo tài khoản
- * manufacturer/distributor.
+ * Đăng ký công khai chỉ tạo tài khoản manufacturer/distributor. Để tạo
+ * admin đầu tiên, hãy đăng ký bình thường rồi đổi role thành "admin" trong
+ * MongoDB Atlas; role gửi từ client không thể cấp quyền admin.
  */
 router.post("/register", async (req, res) => {
   try {
@@ -43,7 +42,7 @@ router.post("/register", async (req, res) => {
       username,
       passwordHash,
       displayName: displayName || username,
-      role: ["manufacturer", "distributor", "admin"].includes(role) ? role : "manufacturer",
+      role: ["manufacturer", "distributor"].includes(role) ? role : "manufacturer",
       walletAddress: walletAddress || "",
     });
 

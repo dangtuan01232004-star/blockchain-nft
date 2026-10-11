@@ -13,13 +13,13 @@ const mongoose = require("mongoose");
  */
 const orderSchema = new mongoose.Schema(
   {
-    tokenId: { type: String, required: true },
-    productName: { type: String, default: "" },
-    productCode: { type: String, default: "" },
-    buyerName: { type: String, required: true },
-    buyerPhone: { type: String, required: true },
-    buyerAddress: { type: String, required: true },
-    note: { type: String, default: "" },
+    tokenId: { type: String, required: true, maxlength: 64 },
+    productName: { type: String, default: "", maxlength: 200 },
+    productCode: { type: String, default: "", maxlength: 100 },
+    buyerName: { type: String, required: true, maxlength: 120 },
+    buyerPhone: { type: String, required: true, maxlength: 15 },
+    buyerAddress: { type: String, required: true, maxlength: 500 },
+    note: { type: String, default: "", maxlength: 1000 },
     status: {
       type: String,
       enum: ["moi", "da_xac_nhan", "da_giao"],

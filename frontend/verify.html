@@ -118,6 +118,19 @@
   const resultEl = document.getElementById("result");
   const errorNote = document.getElementById("errorNote");
 
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
+
+  function safeImageURL(value) {
+    try {
+      const url = new URL(value, window.location.href);
+      return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+    } catch {
+      return "";
+    }
+  }
+
   function showError(msg) {
     errorNote.textContent = msg;
     errorNote.classList.add("show");
@@ -176,9 +189,9 @@
       (data.found ? `Sản phẩm #${data.tokenId}` : "Không tìm thấy sản phẩm");
     document.getElementById("resultTitle").textContent = productName;
 
-    const image = data.metadata && data.metadata.image;
+    const image = safeImageURL(data.metadata && data.metadata.image);
     document.getElementById("productVisual").innerHTML = image
-      ? `<img src="${image}" alt="">`
+      ? `<img src="${esc(image)}" alt="">`
       : `<span class="placeholder-icon">📦</span>`;
 
     if (!data.found || data.authentic === false) {
@@ -279,7 +292,7 @@
 
     const icon = document.createElement("span");
     icon.className = "timeline-event-icon";
-    icon.innerHTML = ACTION_ICONS[h.action] || ACTION_ICONS.RECEIVED;
+    icon.innerHTML = Object.hasOwn(ACTION_ICONS, h.action) ? ACTION_ICONS[h.action] : ACTION_ICONS.RECEIVED;
     const content = document.createElement("span");
     content.className = "timeline-event-content";
     const title = document.createElement("span");

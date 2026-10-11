@@ -2,7 +2,7 @@ const express = require("express");
 const Order = require("../models/Order");
 const SearchLog = require("../models/SearchLog");
 const { listProductsFromBlockchain } = require("../services/productCatalog");
-const { requireAuth } = require("../middleware/auth");
+const { requireAuth, requireApproved } = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -62,8 +62,27 @@ router.get("/search", async (req, res) => {
 router.post("/orders", async (req, res) => {
   try {
     const { tokenId, productName, productCode, buyerName, buyerPhone, buyerAddress, note } = req.body;
-    if (!tokenId || !buyerName || !buyerPhone || !buyerAddress) {
+    if (tokenId === undefined || !buyerName || !buyerPhone || !buyerAddress) {
       return res.status(400).json({ error: "Thiếu tokenId, tên, số điện thoại hoặc địa chỉ nhận hàng" });
+    }
+    const limits = {
+      tokenId: 64,
+      productName: 200,
+      productCode: 100,
+      buyerName: 120,
+      buyerPhone: 15,
+      buyerAddress: 500,
+      note: 1000,
+    };
+    const fields = { tokenId, productName, productCode, buyerName, buyerPhone, buyerAddress, note };
+    for (const [field, value] of Object.entries(fields)) {
+      if (value === undefined || value === null) continue;
+      if (typeof value !== "string" && !(field === "tokenId" && typeof value === "number")) {
+        return res.status(400).json({ error: `Trường ${field} không hợp lệ` });
+      }
+      if (String(value).length > limits[field]) {
+        return res.status(400).json({ error: `Trường ${field} vượt quá ${limits[field]} ký tự` });
+      }
     }
     if (!/^[0-9+\s-]{8,15}$/.test(buyerPhone)) {
       return res.status(400).json({ error: "Số điện thoại không hợp lệ" });
@@ -84,21 +103,54 @@ router.post("/orders", async (req, res) => {
   }
 });
 
-/** GET /api/shop/orders — CHỈ tài khoản đã đăng nhập (bên bán) xem được danh sách đơn hàng */
-router.get("/orders", requireAuth, async (req, res) => {
-  const orders = await Order.find().sort({ createdAt: -1 });
-  res.json(orders);
+async function getIssuedTokenIds(walletAddress) {
+  if (!walletAddress) return [];
+  const wallet = walletAddress.toLowerCase();
+  const products = await listProductsFromBlockchain();
+  return products
+    .filter((product) => product.mintedBy?.toLowerCase() === wallet)
+    .map((product) => String(product.tokenId));
+}
+
+/** GET /api/shop/orders — chỉ tài khoản đã duyệt xem đơn sản phẩm mình phát hành */
+router.get("/orders", requireAuth, requireApproved, async (req, res) => {
+  try {
+    let orders = await Order.find().sort({ createdAt: -1 });
+    if (req.dbUser.role !== "admin") {
+      const tokenIds = new Set(await getIssuedTokenIds(req.dbUser.walletAddress));
+      orders = orders.filter((order) => tokenIds.has(order.tokenId));
+    }
+    res.json(orders);
+  } catch (err) {
+    console.error("Không tải được đơn hàng của sản phẩm đã phát hành:", err);
+    res.status(500).json({ error: err.message || "Không tải được danh sách đơn hàng" });
+  }
 });
 
-/** PATCH /api/shop/orders/:id/status — bên bán cập nhật trạng thái xử lý đơn */
-router.patch("/orders/:id/status", requireAuth, async (req, res) => {
+/** PATCH /api/shop/orders/:id/status — chỉ tài khoản đã duyệt cập nhật đơn sản phẩm mình phát hành */
+router.patch("/orders/:id/status", requireAuth, requireApproved, async (req, res) => {
   const { status } = req.body;
   if (!["moi", "da_xac_nhan", "da_giao"].includes(status)) {
     return res.status(400).json({ error: "Trạng thái không hợp lệ" });
   }
-  const order = await Order.findByIdAndUpdate(req.params.id, { status }, { new: true });
-  if (!order) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
-  res.json(order);
+  try {
+    let order;
+    if (req.dbUser.role === "admin") {
+      order = await Order.findByIdAndUpdate(req.params.id, { status }, { new: true });
+    } else {
+      const tokenIds = await getIssuedTokenIds(req.dbUser.walletAddress);
+      order = await Order.findOneAndUpdate(
+        { _id: req.params.id, tokenId: { $in: tokenIds } },
+        { status },
+        { new: true }
+      );
+    }
+    if (!order) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
+    res.json(order);
+  } catch (err) {
+    console.error("Không cập nhật được trạng thái đơn hàng:", err);
+    res.status(500).json({ error: err.message || "Không cập nhật được trạng thái đơn hàng" });
+  }
 });
 
 module.exports = router;
