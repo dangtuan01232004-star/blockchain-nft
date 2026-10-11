@@ -98,6 +98,23 @@
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
   );
 
+  function safeImageURL(value) {
+    if (!value) return "";
+    try {
+      const url = new URL(value, API_BASE);
+      return url.protocol === "http:" || url.protocol === "https:" ? url.href : "";
+    } catch {
+      return "";
+    }
+  }
+
+  function imagePlaceholder() {
+    const placeholder = document.createElement("div");
+    placeholder.className = "shop-product-image-placeholder";
+    placeholder.textContent = "Chưa có ảnh sản phẩm";
+    return placeholder;
+  }
+
   function openModal(id) { document.getElementById(id).classList.add("show"); }
   function closeModal(id) { document.getElementById(id).classList.remove("show"); }
   document.querySelectorAll("[data-close]").forEach((btn) => btn.addEventListener("click", () => closeModal(btn.dataset.close)));
@@ -117,10 +134,16 @@
     list.forEach((p) => {
       const card = document.createElement("div");
       card.className = "product-card";
+      const imageURL = safeImageURL(p.image);
       card.innerHTML = `
         <div class="product-card-top">
           <span class="mono" style="font-size:0.8rem; color:var(--muted)">#${esc(p.tokenId)}</span>
           <span class="pill">Số lượng: ${esc(p.quantity)}</span>
+        </div>
+        <div class="shop-product-image">
+          ${imageURL
+            ? `<img src="${esc(imageURL)}" alt="${esc(p.name || "Ảnh sản phẩm")}" loading="lazy">`
+            : `<span class="shop-product-image-placeholder">Chưa có ảnh sản phẩm</span>`}
         </div>
         <h3>${esc(p.name || "(chưa đặt tên)")}</h3>
         <p class="product-card-meta">${esc(p.productCode || "")}${p.manufacturer ? " · " + esc(p.manufacturer) : ""}</p>
@@ -129,6 +152,10 @@
           <button class="btn btn-primary buy-btn" data-token="${esc(p.tokenId)}" style="font-size:0.82rem; padding:8px 12px">🛒 Mua ngay</button>
         </div>
       `;
+      const image = card.querySelector(".shop-product-image img");
+      if (image) {
+        image.addEventListener("error", () => image.replaceWith(imagePlaceholder()), { once: true });
+      }
       grid.appendChild(card);
     });
     grid.querySelectorAll(".buy-btn").forEach((btn) => {

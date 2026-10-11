@@ -31,6 +31,9 @@ router.post("/register", async (req, res) => {
     if (password.length < 6) {
       return res.status(400).json({ error: "Mật khẩu phải có ít nhất 6 ký tự" });
     }
+    if (role === "admin") {
+      return res.status(403).json({ error: "Không thể tự đăng ký tài khoản admin" });
+    }
 
     const existing = await User.findOne({ username: username.toLowerCase() });
     if (existing) {

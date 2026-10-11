@@ -1167,6 +1167,27 @@ body.app-theme .qr-preview img { border-radius: 12px; }
   padding: 18px;
   box-shadow: 0 1px 2px rgba(16,24,40,0.04);
 }
+.shop-product-image {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  margin-bottom: 16px;
+  overflow: hidden;
+  border-radius: 12px;
+  background: var(--paper);
+}
+.shop-product-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.shop-product-image-placeholder {
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-align: center;
+}
 .product-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
 .product-card h3 { font-family: var(--font-display); font-size: 1rem; margin: 0 0 4px; }
 .product-card-meta { font-size: 0.82rem; color: var(--ink-soft); margin: 0 0 2px; }

@@ -1,6 +1,6 @@
 const { getReadOnlyContract } = require("./blockchain");
 const { listProducts: listCachedProducts } = require("./cache");
-const { getMetadataByTokenURI } = require("./storage");
+const { getMetadataByTokenURI, resolvePhotoURL } = require("./storage");
 const { getProductVerifyURL } = require("./qrcode");
 
 const RPC_BATCH_SIZE = 10;
@@ -23,6 +23,7 @@ async function getProductFromChain(contract, tokenId, cachedProduct) {
     tokenId,
     productCode: onChainProductCode || cachedProduct?.productCode || "",
     name: metadata?.name || cachedProduct?.name || onChainProductCode || `Sản phẩm #${tokenId}`,
+    image: resolvePhotoURL(metadata?.image || cachedProduct?.image || ""),
     manufacturer: metadata?.manufacturer || cachedProduct?.manufacturer || "",
     batch: metadata?.batch || cachedProduct?.batch || "",
     tokenURI,
