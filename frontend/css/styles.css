@@ -413,6 +413,13 @@ a { color: inherit; }
   border-color: var(--ink);
   color: var(--ink);
 }
+.btn-danger {
+  background: var(--seal-danger);
+  color: #fff;
+}
+.btn-danger:hover:not(:disabled) { filter: brightness(0.92); }
+.btn-danger:focus-visible { outline: 2px solid var(--seal-danger); outline-offset: 3px; }
+.btn-danger:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* Lưới quy trình */
 .process {

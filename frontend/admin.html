@@ -64,6 +64,27 @@
         <button class="btn btn-primary" id="openMintModal">+ Phát hành NFT mới</button>
       </div>
       <p class="section-sub" id="productsHint">Kết nối ví để xem sản phẩm bạn đã phát hành.</p>
+      <div class="status-msg" id="revokeAccessStatus" role="status" aria-live="polite"></div>
+      <div class="panel" id="revokePanel" hidden style="margin-top:22px">
+        <h2>Thu hồi xác thực sản phẩm</h2>
+        <p class="section-sub">
+          Chỉ ví có quyền Admin trên smart contract mới được thực hiện. Việc thu hồi không thể hoàn tác
+          và sẽ chặn mọi thao tác chuyển giao tiếp theo.
+        </p>
+        <form id="revokeForm">
+          <div class="field">
+            <label for="revokeTokenId">Token ID</label>
+            <input type="number" id="revokeTokenId" min="0" step="1" inputmode="numeric" placeholder="Ví dụ: 0" required>
+          </div>
+          <div class="field">
+            <label for="revokeReason">Lý do thu hồi</label>
+            <textarea id="revokeReason" placeholder="Mô tả lý do thu hồi xác thực" required></textarea>
+          </div>
+          <button type="submit" class="btn btn-danger" id="revokeSubmitBtn">Thu hồi xác thực</button>
+        </form>
+        <div class="status-msg" id="revokeStatus" role="status" aria-live="polite"></div>
+        <a id="revokeTxLink" class="mono" href="#" target="_blank" rel="noopener noreferrer" hidden style="margin-top:10px; word-break:break-all"></a>
+      </div>
       <div class="product-grid" id="productGrid"></div>
     </section>
 

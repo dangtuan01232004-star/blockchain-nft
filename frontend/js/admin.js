@@ -81,15 +81,20 @@ function roleBadgeHtml(label, active) {
 
 async function refreshRoleBadges(address) {
   const badges = document.getElementById("roleBadges");
+  const revokePanel = document.getElementById("revokePanel");
   badges.innerHTML = `<span class="pill">Đang kiểm tra...</span>`;
   try {
     const { isManufacturer, isDistributor, isAdmin } = await detectRoles(address);
+    revokePanel.hidden = !isAdmin;
     badges.innerHTML =
       roleBadgeHtml("Admin", isAdmin) +
       roleBadgeHtml("Sản xuất", isManufacturer) +
       roleBadgeHtml("Phân phối", isDistributor);
+    return { isManufacturer, isDistributor, isAdmin };
   } catch (err) {
+    revokePanel.hidden = true;
     badges.innerHTML = `<span class="pill" style="background:var(--seal-danger-soft); color:var(--seal-danger)">Lỗi: ${esc(err.message)}</span>`;
+    return null;
   }
 }
 
@@ -123,6 +128,123 @@ async function handleConnect() {
   }
 }
 document.getElementById("connectBtn").addEventListener("click", handleConnect);
+
+function revokeErrorMessage(err) {
+  const raw = [
+    err && err.reason,
+    err && err.shortMessage,
+    err && err.message,
+    err && err.info && err.info.error && err.info.error.message,
+    err && err.cause && err.cause.message,
+  ].filter(Boolean).join(" ").toLowerCase();
+  const code = err && (err.code || (err.info && err.info.error && err.info.error.code));
+
+  if (code === 4001 || code === "ACTION_REJECTED" || raw.includes("user rejected")) {
+    return "Bạn đã từ chối ký giao dịch trong MetaMask.";
+  }
+  if (String(code).toUpperCase() === "INSUFFICIENT_FUNDS" || raw.includes("insufficient funds") || raw.includes("insufficient balance")) {
+    return "Ví không đủ ETH trên Sepolia để trả phí gas. Hãy nạp Sepolia ETH rồi thử lại.";
+  }
+  if (raw.includes("không có default_admin_role")) {
+    return "Ví đang kết nối không có DEFAULT_ADMIN_ROLE trên smart contract.";
+  }
+  if (raw.includes("accesscontrolunauthorizedaccount") || raw.includes("missing role")) {
+    return "Ví đang kết nối không có DEFAULT_ADMIN_ROLE trên smart contract.";
+  }
+  if (raw.includes("không tồn tại trên smart contract")) {
+    return "Token ID không tồn tại trên smart contract.";
+  }
+  if (raw.includes("erc721nonexistenttoken") || raw.includes("nonexistent token") || raw.includes("token khong ton tai")) {
+    return "Token ID không tồn tại trên smart contract.";
+  }
+  if (raw.includes("đã bị thu hồi xác thực trước đó")) {
+    return "Token này đã bị thu hồi xác thực trước đó.";
+  }
+  if (raw.includes("san pham da bi thu hoi xac thuc")) {
+    return "Token này đã bị thu hồi xác thực trước đó.";
+  }
+  return "Không thể thực hiện giao dịch. Hãy kiểm tra kết nối Sepolia và thử lại.";
+}
+
+document.getElementById("revokeForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!requireWallet()) return;
+
+  const form = e.currentTarget;
+  const statusEl = document.getElementById("revokeStatus");
+  const accessStatusEl = document.getElementById("revokeAccessStatus");
+  const submitBtn = document.getElementById("revokeSubmitBtn");
+  const txLink = document.getElementById("revokeTxLink");
+  const tokenId = document.getElementById("revokeTokenId").value.trim();
+  const reason = document.getElementById("revokeReason").value.trim();
+
+  if (!/^\d+$/.test(tokenId)) {
+    showStatus(statusEl, "Token ID phải là số nguyên không âm.", false);
+    return;
+  }
+  if (!reason) {
+    showStatus(statusEl, "Vui lòng nhập lý do thu hồi.", false);
+    return;
+  }
+  if (!window.confirm(
+    `Bạn sắp thu hồi xác thực token #${tokenId}.\n\n` +
+    `Lý do: ${reason}\n\n` +
+    "Thao tác này KHÔNG thể hoàn tác và sẽ chặn chuyển giao token. Bạn có chắc chắn muốn tiếp tục?"
+  )) {
+    return;
+  }
+
+  submitBtn.disabled = true;
+  txLink.hidden = true;
+  txLink.removeAttribute("href");
+  accessStatusEl.className = "status-msg";
+  accessStatusEl.textContent = "";
+
+  try {
+    showStatus(statusEl, "Đang kiểm tra quyền Admin và trạng thái token trên blockchain...", true);
+    let roles;
+    try {
+      roles = await detectRoles(wallet.address);
+    } catch (err) {
+      document.getElementById("revokePanel").hidden = true;
+      throw err;
+    }
+    if (!roles.isAdmin) {
+      document.getElementById("revokePanel").hidden = true;
+      throw new Error("Ví đang kết nối không có DEFAULT_ADMIN_ROLE trên smart contract.");
+    }
+
+    const readOnly = await getReadOnlyContract();
+    const mintedCount = await readOnly.totalMinted();
+    if (BigInt(tokenId) >= mintedCount) {
+      throw new Error("Token ID không tồn tại trên smart contract.");
+    }
+    if (await readOnly.isRevoked(tokenId)) {
+      throw new Error("Token này đã bị thu hồi xác thực trước đó.");
+    }
+
+    showStatus(statusEl, "Vui lòng xác nhận giao dịch trong MetaMask...", true);
+    const tx = await wallet.contract.revokeAuthenticity(tokenId, reason);
+    txLink.href = `https://sepolia.etherscan.io/tx/${tx.hash}`;
+    txLink.textContent = `Xem giao dịch trên Sepolia Etherscan: ${tx.hash}`;
+    txLink.hidden = false;
+    showStatus(statusEl, "Đã gửi giao dịch. Đang chờ xác nhận trên blockchain...", true);
+
+    await tx.wait();
+    showStatus(statusEl, `Đã thu hồi xác thực token #${tokenId} thành công.`, true);
+    form.reset();
+  } catch (err) {
+    console.error(err);
+    const message = revokeErrorMessage(err);
+    if (document.getElementById("revokePanel").hidden) {
+      showStatus(accessStatusEl, message, false);
+    } else {
+      showStatus(statusEl, message, false);
+    }
+  } finally {
+    submitBtn.disabled = false;
+  }
+});
 
 if (window.ethereum) {
   window.ethereum.on("accountsChanged", () => window.location.reload());
