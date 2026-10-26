@@ -1,6 +1,12 @@
 require("dotenv").config();
+if (!process.env.JWT_SECRET) {
+  console.error("Thiếu JWT_SECRET — backend sẽ dừng để tránh dùng secret mặc định không an toàn.");
+  process.exit(1);
+}
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
+const { rateLimit } = require("express-rate-limit");
 const path = require("path");
 
 const productsRouter = require("./routes/products");
@@ -19,7 +25,51 @@ resetCacheIfContractChanged();
 connectDB();
 
 const app = express();
-app.use(cors());
+app.set("trust proxy", 1);
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+}));
+
+const allowedOrigins = new Set(
+  (process.env.FRONTEND_ORIGIN || "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
+if (allowedOrigins.size === 0) {
+  console.warn("FRONTEND_ORIGIN chưa được cấu hình; trình duyệt cross-origin sẽ không được CORS cho phép.");
+}
+app.use(cors({
+  origin(origin, callback) {
+    callback(null, !origin || allowedOrigins.has(origin));
+  },
+}));
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Quá nhiều lần đăng nhập. Vui lòng thử lại sau 15 phút." },
+});
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Quá nhiều lần đăng ký. Vui lòng thử lại sau." },
+});
+const orderLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Quá nhiều yêu cầu đặt hàng. Vui lòng thử lại sau." },
+});
+
+app.use("/api/auth/login", loginLimiter);
+app.use("/api/auth/register", registerLimiter);
+app.post("/api/shop/orders", orderLimiter);
 app.use(express.json({ limit: "5mb" }));
 
 // "IPFS gateway" cục bộ cho metadata NFT

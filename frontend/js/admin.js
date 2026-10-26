@@ -395,7 +395,11 @@ function statusLabel(p, currentOwner) {
 }
 
 function productQRCodeURL(product) {
-  return new URL(product.qrCodeUrl, `${API_BASE.replace(/\/+$/, "")}/`).href;
+  const apiRoot = `${API_BASE.replace(/\/+$/, "")}/`;
+  return new URL(
+    `api/products/${encodeURIComponent(product.tokenId)}/qr`,
+    apiRoot
+  ).href;
 }
 
 async function renderProductGrid() {

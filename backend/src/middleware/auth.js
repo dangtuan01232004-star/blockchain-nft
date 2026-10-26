@@ -15,7 +15,7 @@ function requireAuth(req, res, next) {
   }
 
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET || "dev-secret-khong-dung-cho-production");
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
     req.user = payload; // { id, username, role }
     next();
   } catch (err) {

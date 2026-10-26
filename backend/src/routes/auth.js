@@ -9,8 +9,8 @@ const router = express.Router();
 function signToken(user) {
   return jwt.sign(
     { id: user._id, username: user.username, role: user.role },
-    process.env.JWT_SECRET || "dev-secret-khong-dung-cho-production",
-    { expiresIn: "7d" }
+    process.env.JWT_SECRET,
+    { expiresIn: "1d" }
   );
 }
 
@@ -34,6 +34,9 @@ router.post("/register", async (req, res) => {
     if (role === "admin") {
       return res.status(403).json({ error: "Không thể tự đăng ký tài khoản admin" });
     }
+    if (!["manufacturer", "distributor"].includes(role)) {
+      return res.status(400).json({ error: "Vai trò đăng ký không hợp lệ" });
+    }
 
     const existing = await User.findOne({ username: username.toLowerCase() });
     if (existing) {
@@ -45,7 +48,7 @@ router.post("/register", async (req, res) => {
       username,
       passwordHash,
       displayName: displayName || username,
-      role: ["manufacturer", "distributor"].includes(role) ? role : "manufacturer",
+      role,
       walletAddress: walletAddress || "",
     });
 

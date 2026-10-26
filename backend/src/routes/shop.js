@@ -2,6 +2,7 @@ const express = require("express");
 const Order = require("../models/Order");
 const SearchLog = require("../models/SearchLog");
 const { listProductsFromBlockchain } = require("../services/productCatalog");
+const { listProducts } = require("../services/cache");
 const { requireAuth, requireApproved } = require("../middleware/auth");
 
 const router = express.Router();
@@ -99,16 +100,18 @@ router.post("/orders", async (req, res) => {
     res.status(201).json(order);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message || "Lỗi khi đặt hàng" });
+    if (err.name === "ValidationError") {
+      return res.status(400).json({ error: "Thông tin đơn hàng không hợp lệ" });
+    }
+    res.status(500).json({ error: "Lỗi khi đặt hàng" });
   }
 });
 
-async function getIssuedTokenIds(walletAddress) {
+function getIssuedTokenIds(walletAddress) {
   if (!walletAddress) return [];
   const wallet = walletAddress.toLowerCase();
-  const products = await listProductsFromBlockchain();
-  return products
-    .filter((product) => product.mintedBy?.toLowerCase() === wallet)
+  return listProducts()
+    .filter((product) => String(product.mintedBy || "").toLowerCase() === wallet)
     .map((product) => String(product.tokenId));
 }
 
