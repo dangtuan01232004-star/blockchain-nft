@@ -5,7 +5,15 @@ const { saveMetadata, savePhoto, getMetadataByTokenURI, resolvePhotoURL } = requ
 const { generateProductQRCode, ensureProductQRCode } = require("../services/qrcode");
 const { addProduct } = require("../services/cache");
 const { listProductsFromBlockchain } = require("../services/productCatalog");
-const { requireAuth } = require("../middleware/auth");
+const { requireAuth, requireApproved, requireAdmin } = require("../middleware/auth");
+const { rateLimit } = require("express-rate-limit");
+const {
+  issueClaimCode,
+  claimProduct,
+  getClaimStatus,
+  reportProduct,
+  recoverOwnership,
+} = require("../services/claimCodes");
 const { recordScan, evaluateSuspicion } = require("../services/scanGuard");
 
 const router = express.Router();
@@ -17,7 +25,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 *
  * Trả về { url } — dùng làm tham số photoURI khi gọi contract.
  * form-data field name: "photo"
  */
-router.post("/photo", requireAuth, upload.single("photo"), async (req, res) => {
+router.post("/photo", requireAuth, requireApproved, upload.single("photo"), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "Thiếu file ảnh (field 'photo')" });
     const { url } = await savePhoto(req.file.buffer, req.file.mimetype, req.file.originalname);
@@ -35,7 +43,7 @@ router.post("/photo", requireAuth, upload.single("photo"), async (req, res) => {
  * ký giao dịch bằng ví của nhà sản xuất (MetaMask).
  * body: { productCode, name, description, image, manufacturer, batch, attributes }
  */
-router.post("/metadata", requireAuth, async (req, res) => {
+router.post("/metadata", requireAuth, requireApproved, async (req, res) => {
   const { productCode, name, description, image, manufacturer, batch, attributes } = req.body;
   if (!productCode || !name) {
     return res.status(400).json({ error: "Thiếu productCode hoặc name" });
@@ -67,7 +75,7 @@ router.post("/metadata", requireAuth, async (req, res) => {
  * bản cache phụ. Danh sách chính được dựng lại từ blockchain.
  * body: { tokenId, productCode, name, manufacturer, batch, tokenURI, txHash }
  */
-router.post("/record", requireAuth, async (req, res) => {
+router.post("/record", requireAuth, requireApproved, async (req, res) => {
   try {
     const { tokenId, productCode, name, manufacturer, batch, tokenURI, txHash, mintedBy } = req.body;
     if (tokenId === undefined || !productCode || !tokenURI || !txHash) {
@@ -89,12 +97,46 @@ router.post("/record", requireAuth, async (req, res) => {
       mintedAt: new Date().toISOString(),
     };
     addProduct(record);
-    res.status(201).json(record);
+
+    // Sinh mã cào dùng 1 lần — chỉ trả về ĐÚNG LẦN NÀY để in tem, server
+    // chỉ giữ bản băm. Backend tự kiểm tra trên chain: chỉ ví đã mint mới sinh được.
+    const issued = await issueClaimCode(tokenId, req.dbUser, req);
+    res.status(201).json({
+      ...record,
+      claimCode: issued.ok ? issued.code : null,
+      claimCodeError: issued.ok ? undefined : issued.error,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message || "Lỗi khi ghi nhận sản phẩm" });
   }
 });
+
+/**
+ * Đọc trạng thái an ninh on-chain của sản phẩm: có dính tới ví bị gắn cờ
+ * "đã bị xâm phạm" không, và hệ thống có đang tạm dừng khẩn cấp không.
+ * Tương thích ngược: contract cũ chưa có các hàm này thì trả về mặc định.
+ */
+async function readSecurityStatus(contract, tokenId) {
+  const result = { suspect: false, suspectActor: "", compromisedSince: null, suspectStep: null, paused: false };
+  try {
+    const [suspect, actor, since, stepIndex] = await contract.securityStatus(tokenId);
+    if (suspect) {
+      result.suspect = true;
+      result.suspectActor = actor;
+      result.compromisedSince = new Date(Number(since) * 1000).toISOString();
+      result.suspectStep = Number(stepIndex);
+    }
+  } catch {
+    // contract cũ chưa có securityStatus()
+  }
+  try {
+    result.paused = await contract.paused();
+  } catch {
+    // contract cũ chưa có Pausable
+  }
+  return result;
+}
 
 /**
  * GET /api/products/verify/:tokenId
@@ -115,6 +157,13 @@ router.get("/verify/:tokenId", async (req, res) => {
     // backend/src/services/scanGuard.js).
     await recordScan(tokenId, deviceId, req.ip, req.headers["user-agent"]);
     const scan = await evaluateSuspicion(tokenId);
+    const security = await readSecurityStatus(contract, tokenId);
+    let claim = { status: "unknown" };
+    try {
+      claim = await getClaimStatus(tokenId, req.headers["x-owner-token"]);
+    } catch (err) {
+      console.error("Không đọc được trạng thái mã cào:", err.message);
+    }
 
     res.json({
       tokenId,
@@ -126,6 +175,8 @@ router.get("/verify/:tokenId", async (req, res) => {
       metadata,
       historyStepCount: Number(steps),
       scan,
+      security,
+      claim,
       history: history.map((h) => ({
         actor: h.actor,
         actorRole: h.actorRole,
@@ -137,6 +188,17 @@ router.get("/verify/:tokenId", async (req, res) => {
       })),
     });
   } catch (err) {
+    // Lỗi mạng / RPC (không phải do token không tồn tại) → KHÔNG được kết
+    // luận "hàng giả": báo tạm thời không kiểm tra được. Nếu không, chỉ cần
+    // làm sập RPC là mọi hàng thật đều hiện dấu đỏ.
+    if (err && err.code !== "CALL_EXCEPTION") {
+      console.error("Không đọc được blockchain khi xác thực:", err.message);
+      return res.status(503).json({
+        tokenId,
+        found: null,
+        message: "Tạm thời không kết nối được blockchain để xác thực. Vui lòng thử lại sau ít phút.",
+      });
+    }
     // Token không tồn tại trên blockchain => rất có thể là hàng giả / mã QR giả mạo
     res.status(404).json({
       tokenId,
@@ -145,6 +207,89 @@ router.get("/verify/:tokenId", async (req, res) => {
       message:
         "Không tìm thấy sản phẩm này trên blockchain. Đây có thể là hàng giả hoặc mã QR không hợp lệ.",
     });
+  }
+});
+
+// ---------------------------------------------------------------------
+// Mã cào dùng 1 lần
+// ---------------------------------------------------------------------
+
+// Giới hạn theo IP — cộng thêm khoá 5 lần sai theo từng sản phẩm
+const claimLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Bạn thử quá nhiều lần. Vui lòng đợi 15 phút." },
+});
+const reportLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Bạn đã gửi nhiều báo cáo. Vui lòng thử lại sau." },
+});
+
+/**
+ * POST /api/products/:tokenId/claim — người mua kích hoạt bằng mã cào.
+ * body: { code, contact? }  (contact: SĐT/email để khôi phục khi đổi máy)
+ * Trả { ownerToken } — trình duyệt giữ token này để được nhận là chủ sở hữu.
+ */
+router.post("/:tokenId/claim", claimLimiter, async (req, res) => {
+  try {
+    const { code, contact } = req.body || {};
+    if (!code) return res.status(400).json({ error: "Vui lòng nhập mã dưới lớp cào" });
+    const r = await claimProduct(req.params.tokenId, code, contact, req);
+    res.status(r.status).json(r.body);
+  } catch (err) {
+    console.error("Lỗi kích hoạt mã cào:", err);
+    res.status(500).json({ error: "Không kích hoạt được, vui lòng thử lại" });
+  }
+});
+
+/** POST /api/products/:tokenId/report — người quét báo nghi hàng giả. body: { message?, contact? } */
+router.post("/:tokenId/report", reportLimiter, async (req, res) => {
+  try {
+    const { message, contact } = req.body || {};
+    await reportProduct(req.params.tokenId, message, contact, req);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Lỗi gửi báo cáo:", err);
+    res.status(500).json({ error: "Không gửi được báo cáo" });
+  }
+});
+
+/**
+ * POST /api/products/:tokenId/claim-code — CẤP LẠI mã cào (tem in hỏng / bị lộ
+ * trước khi bán). Chỉ ví đã mint hoặc admin; chỉ khi chưa ai kích hoạt.
+ * Mã cũ mất hiệu lực ngay.
+ */
+router.post("/:tokenId/claim-code", requireAuth, requireApproved, async (req, res) => {
+  try {
+    const r = await issueClaimCode(req.params.tokenId, req.dbUser, req, { regenerate: true });
+    if (!r.ok) return res.status(r.status).json({ error: r.error });
+    res.json({ tokenId: req.params.tokenId, claimCode: r.code, version: r.version });
+  } catch (err) {
+    console.error("Lỗi cấp lại mã cào:", err);
+    res.status(500).json({ error: "Không cấp lại được mã cào" });
+  }
+});
+
+/**
+ * POST /api/products/:tokenId/claim/recover — ADMIN cấp lại quyền chủ cho
+ * khách đã đổi điện thoại (sau khi gọi điện xác minh). Trả link để gửi khách.
+ */
+router.post("/:tokenId/claim/recover", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const r = await recoverOwnership(req.params.tokenId, req.dbUser, req);
+    if (!r.ok) return res.status(r.status).json({ error: r.error });
+    const base = new URL(process.env.FRONTEND_VERIFY_URL || "http://localhost:5173/verify.html");
+    base.searchParams.set("tokenId", req.params.tokenId);
+    // Token đặt sau dấu # → không bị gửi lên server/không lưu trong log truy cập
+    res.json({ link: `${base.href}#owner=${r.ownerToken}`, contactMasked: r.contactMasked });
+  } catch (err) {
+    console.error("Lỗi khôi phục quyền chủ:", err);
+    res.status(500).json({ error: "Không khôi phục được" });
   }
 });
 

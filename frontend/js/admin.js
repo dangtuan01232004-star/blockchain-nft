@@ -29,11 +29,13 @@ document.querySelectorAll(".dash-nav-item[data-section]").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".dash-nav-item[data-section]").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
-    ["products", "partners", "users", "orders"].forEach((s) => {
+    ["products", "partners", "users", "orders", "security", "account"].forEach((s) => {
       document.getElementById(`section-${s}`).style.display = btn.dataset.section === s ? "block" : "none";
     });
     if (btn.dataset.section === "users") loadUsers();
     if (btn.dataset.section === "orders") loadOrders();
+    if (btn.dataset.section === "security") loadSecurity();
+    if (btn.dataset.section === "account") loadAccount();
   });
 });
 
@@ -46,14 +48,28 @@ if (authUser) {
   document.getElementById("loggedInRole").textContent = ROLE_LABEL_VI[authUser.role] || authUser.role;
   if (authUser.role === "admin") {
     document.getElementById("usersNavItem").style.display = "block";
+    document.getElementById("securityNavItem").style.display = "block";
+    document.getElementById("partnerFormPanel").style.display = "block";
   }
 }
-document.getElementById("logoutLink").addEventListener("click", (e) => {
+document.getElementById("logoutLink").addEventListener("click", async (e) => {
   e.preventDefault();
+  // Thu hồi phiên trên server (token cũ không dùng lại được nữa), rồi mới xoá ở máy
+  try {
+    await fetch(`${API_BASE}/api/auth/me/logout`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${localStorage.getItem("authToken")}` },
+    });
+  } catch { /* vẫn đăng xuất ở máy */ }
   localStorage.removeItem("authToken");
   localStorage.removeItem("authUser");
   window.location.href = "login.html";
 });
+
+function goToSection(name) {
+  const btn = document.querySelector(`.dash-nav-item[data-section="${name}"]`);
+  if (btn) btn.click();
+}
 
 /** fetch có tự gắn header Authorization — dùng cho mọi API cần đăng nhập */
 async function authFetch(url, options = {}) {
@@ -61,11 +77,23 @@ async function authFetch(url, options = {}) {
   const headers = { ...(options.headers || {}), Authorization: `Bearer ${token}` };
   const res = await fetch(url, { ...options, headers });
   if (res.status === 401) {
+    let reason = "Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.";
+    try { reason = (await res.clone().json()).error || reason; } catch { /* giữ thông báo mặc định */ }
     localStorage.removeItem("authToken");
     localStorage.removeItem("authUser");
-    alert("Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.");
+    alert(reason);
     window.location.href = "login.html";
     throw new Error("Chưa đăng nhập");
+  }
+  if (res.status === 403) {
+    try {
+      const body = await res.clone().json();
+      if (body.code === "ADMIN_2FA_REQUIRED" && !window.__admin2faWarned) {
+        window.__admin2faWarned = true;
+        alert(body.error);
+        goToSection("account");
+      }
+    } catch { /* bỏ qua */ }
   }
   return res;
 }
@@ -84,13 +112,16 @@ async function refreshRoleBadges(address) {
   const revokePanel = document.getElementById("revokePanel");
   badges.innerHTML = `<span class="pill">Đang kiểm tra...</span>`;
   try {
-    const { isManufacturer, isDistributor, isAdmin } = await detectRoles(address);
-    revokePanel.hidden = !isAdmin;
+    const roles = await detectRoles(address);
+    const { isManufacturer, isDistributor, isAdmin, isOperator, isGuardian } = roles;
+    revokePanel.hidden = !(isAdmin || isGuardian);
     badges.innerHTML =
       roleBadgeHtml("Admin", isAdmin) +
+      (isOperator ? roleBadgeHtml("Vận hành", true) : "") +
+      (isGuardian ? roleBadgeHtml("Guardian", true) : "") +
       roleBadgeHtml("Sản xuất", isManufacturer) +
       roleBadgeHtml("Phân phối", isDistributor);
-    return { isManufacturer, isDistributor, isAdmin };
+    return roles;
   } catch (err) {
     revokePanel.hidden = true;
     badges.innerHTML = `<span class="pill" style="background:var(--seal-danger-soft); color:var(--seal-danger)">Lỗi: ${esc(err.message)}</span>`;
@@ -110,16 +141,14 @@ async function handleConnect() {
     await refreshRoleBadges(wallet.address);
     await renderProductGrid(); // lọc lại "sản phẩm đang giữ" theo ví vừa kết nối
 
-    // Ghi lại địa chỉ ví này vào tài khoản đăng nhập — để admin biết cấp
-    // quyền cho đúng địa chỉ nào ở mục "Quản lý người dùng".
+    // Liên kết ví với tài khoản đăng nhập — để admin biết cấp quyền cho
+    // đúng địa chỉ nào. Phải KÝ tin nhắn chứng minh sở hữu ví (SIWE), nên
+    // kẻ chiếm được tài khoản web cũng không gắn được ví lạ vào.
     try {
-      await authFetch(`${API_BASE}/api/auth/me/wallet`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ walletAddress: wallet.address }),
-      });
-    } catch {
-      // Không chặn luồng chính nếu lưu ví thất bại — chỉ ảnh hưởng tính năng duyệt quyền
+      await linkWalletIfNeeded();
+    } catch (err) {
+      console.warn("Không liên kết được ví với tài khoản:", err);
+      alert("Ví đã kết nối, nhưng chưa liên kết được với tài khoản: " + explainContractError(err));
     }
   } catch (err) {
     alert("Không kết nối được ví: " + err.message);
@@ -128,6 +157,39 @@ async function handleConnect() {
   }
 }
 document.getElementById("connectBtn").addEventListener("click", handleConnect);
+
+/** Chỉ yêu cầu ký khi ví đang kết nối khác ví đã liên kết (hoặc chưa xác minh) */
+async function linkWalletIfNeeded() {
+  const meRes = await authFetch(`${API_BASE}/api/auth/me`);
+  const me = await meRes.json();
+  const current = wallet.address.toLowerCase();
+  if (me.walletAddress === current && me.walletVerifiedAt) return;
+
+  if (me.walletAddress && me.walletAddress !== current) {
+    const ok = window.confirm(
+      `Tài khoản của bạn đang liên kết với ví ${me.walletAddress}.\n\n` +
+        `Đổi sang ví ${wallet.address}? Tài khoản sẽ chuyển về "Đang chờ duyệt" và admin sẽ nhận cảnh báo.`
+    );
+    if (!ok) return;
+  }
+
+  const nonceRes = await authFetch(`${API_BASE}/api/auth/me/wallet/nonce`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ walletAddress: wallet.address }),
+  });
+  const { message, error } = await nonceRes.json();
+  if (!nonceRes.ok) throw new Error(error || "Không tạo được yêu cầu ký");
+
+  const signature = await wallet.signer.signMessage(message);
+  const linkRes = await authFetch(`${API_BASE}/api/auth/me/wallet`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ walletAddress: wallet.address, message, signature }),
+  });
+  const linked = await linkRes.json();
+  if (!linkRes.ok) throw new Error(linked.error || "Liên kết ví thất bại");
+}
 
 function revokeErrorMessage(err) {
   const raw = [
@@ -145,11 +207,11 @@ function revokeErrorMessage(err) {
   if (String(code).toUpperCase() === "INSUFFICIENT_FUNDS" || raw.includes("insufficient funds") || raw.includes("insufficient balance")) {
     return "Ví không đủ ETH trên Sepolia để trả phí gas. Hãy nạp Sepolia ETH rồi thử lại.";
   }
-  if (raw.includes("không có default_admin_role")) {
-    return "Ví đang kết nối không có DEFAULT_ADMIN_ROLE trên smart contract.";
+  if (raw.includes("không có quyền guardian/admin") || raw.includes("khong co quyen thu hoi")) {
+    return "Ví đang kết nối không có quyền Guardian/Admin trên smart contract.";
   }
   if (raw.includes("accesscontrolunauthorizedaccount") || raw.includes("missing role")) {
-    return "Ví đang kết nối không có DEFAULT_ADMIN_ROLE trên smart contract.";
+    return "Ví đang kết nối không có quyền Guardian/Admin trên smart contract.";
   }
   if (raw.includes("không tồn tại trên smart contract")) {
     return "Token ID không tồn tại trên smart contract.";
@@ -209,9 +271,9 @@ document.getElementById("revokeForm").addEventListener("submit", async (e) => {
       document.getElementById("revokePanel").hidden = true;
       throw err;
     }
-    if (!roles.isAdmin) {
+    if (!roles.isAdmin && !roles.isGuardian) {
       document.getElementById("revokePanel").hidden = true;
-      throw new Error("Ví đang kết nối không có DEFAULT_ADMIN_ROLE trên smart contract.");
+      throw new Error("Ví đang kết nối không có quyền Guardian/Admin trên smart contract.");
     }
 
     const readOnly = await getReadOnlyContract();
@@ -281,45 +343,86 @@ async function loadUsers() {
 
     tbody.innerHTML = "";
     users.forEach((u) => {
-      const canApprove = u.walletAddress && u.roleStatus !== "da_duyet" && USER_ROLE_TO_CONTRACT_ROLE[u.role];
+      const canApprove =
+        u.walletAddress && u.walletVerifiedAt && u.roleStatus !== "da_duyet" && USER_ROLE_TO_CONTRACT_ROLE[u.role] && !u.disabled;
+      // Cảnh báo nổi bật khi tài khoản ĐỔI VÍ — kịch bản kẻ chiếm tài khoản
+      // đổi sang ví của họ rồi chờ admin bấm "Cấp quyền".
+      const walletChange = u.previousWallet
+        ? `<div style="margin-top:6px; padding:6px 8px; border-radius:8px; background:var(--seal-danger-soft); color:var(--seal-danger); font-size:0.75rem">
+             ⚠ Đã đổi ví${u.walletChangedAt ? " lúc " + esc(new Date(u.walletChangedAt).toLocaleString("vi-VN")) : ""}<br>
+             Ví cũ: <span class="mono">${esc(u.previousWallet)}</span><br>
+             Gọi điện xác minh với đối tác TRƯỚC khi cấp quyền ví mới.
+           </div>`
+        : "";
+      const unverified = u.walletAddress && !u.walletVerifiedAt
+        ? `<div style="font-size:0.75rem; color:var(--seal-danger)">Chưa ký xác minh ví — yêu cầu người dùng kết nối lại ví</div>`
+        : "";
+      const isSelf = authUser && (u.username === authUser.username);
       const tr = document.createElement("tr");
       tr.innerHTML = `
-        <td>${esc(u.displayName || u.username)}</td>
+        <td>${esc(u.displayName || u.username)}${u.disabled ? ` <span class="pill" style="background:var(--seal-danger-soft); color:var(--seal-danger)">Đã khoá</span>` : ""}</td>
         <td>${esc(ROLE_LABEL_VI[u.role] || u.role)}</td>
-        <td class="mono" style="font-size:0.78rem">${esc(u.walletAddress || "—")}</td>
+        <td class="mono" style="font-size:0.78rem">${esc(u.walletAddress || "—")}${unverified}${walletChange}</td>
         <td><span class="pill" style="${u.roleStatus === "da_duyet" ? "background:var(--seal-verified-soft); color:var(--seal-verified)" : ""}">${esc(STATUS_LABEL_VI[u.roleStatus] || u.roleStatus)}</span></td>
-        <td>${canApprove ? `<button class="btn btn-primary approve-btn" data-id="${esc(u._id)}" data-role="${esc(u.role)}" data-wallet="${esc(u.walletAddress)}" style="font-size:0.8rem; padding:6px 12px">Cấp quyền</button>` : ""}</td>
+        <td style="display:flex; gap:6px; flex-wrap:wrap">
+          ${canApprove ? `<button class="btn btn-primary approve-btn" data-id="${esc(u._id)}" style="font-size:0.8rem; padding:6px 12px">Cấp quyền</button>` : ""}
+          ${isSelf ? "" : `<button class="btn btn-outline disable-btn" data-id="${esc(u._id)}" data-disabled="${u.disabled ? "1" : "0"}" style="font-size:0.8rem; padding:6px 12px">${u.disabled ? "Mở khoá" : "Khoá tài khoản"}</button>`}
+          ${isSelf ? "" : `<button class="btn btn-outline sessions-btn" data-id="${esc(u._id)}" style="font-size:0.8rem; padding:6px 12px">Đăng xuất mọi phiên</button>`}
+        </td>
       `;
       tbody.appendChild(tr);
     });
 
+    const byId = new Map(users.map((u) => [u._id, u]));
     tbody.querySelectorAll(".approve-btn").forEach((btn) => {
-      btn.addEventListener("click", () => approveUser(btn.dataset.id, btn.dataset.role, btn.dataset.wallet, btn));
+      btn.addEventListener("click", () => approveUser(byId.get(btn.dataset.id), btn));
+    });
+    tbody.querySelectorAll(".disable-btn").forEach((btn) => {
+      btn.addEventListener("click", () => toggleDisableUser(byId.get(btn.dataset.id), btn));
+    });
+    tbody.querySelectorAll(".sessions-btn").forEach((btn) => {
+      btn.addEventListener("click", () => revokeSessions(byId.get(btn.dataset.id), btn));
     });
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="5" style="color:var(--seal-danger)">Lỗi: ${esc(err.message)}</td></tr>`;
   }
 }
 
-async function approveUser(userId, targetRole, targetWallet, btn) {
+async function approveUser(user, btn) {
   if (!requireWallet()) return;
-  const contractRoleName = USER_ROLE_TO_CONTRACT_ROLE[targetRole];
+  const contractRoleName = USER_ROLE_TO_CONTRACT_ROLE[user.role];
   if (!contractRoleName) {
     alert("Vai trò này không có quyền on-chain tương ứng (ví dụ tài khoản admin).");
     return;
   }
 
+  // Xác nhận lại bằng mắt: đúng người, đúng ví. Đây là điểm kẻ tấn công
+  // nhắm tới nhất (lừa admin cấp quyền cho ví của họ).
+  const confirmText =
+    `Cấp ${contractRoleName} cho:\n\n` +
+    `Tài khoản: ${user.displayName || user.username} (${user.username})\n` +
+    `Ví: ${user.walletAddress}\n` +
+    (user.previousWallet ? `\n⚠ TÀI KHOẢN NÀY VỪA ĐỔI VÍ (ví cũ ${user.previousWallet}).\nBạn đã gọi điện xác minh với đối tác chưa?\n` : "") +
+    `\nKiểm tra 4 ký tự cuối ví với đối tác: ...${user.walletAddress.slice(-4)}`;
+  if (!window.confirm(confirmText)) return;
+
   btn.disabled = true;
-  btn.textContent = "Đang ký...";
+  btn.textContent = "Đang kiểm tra...";
   try {
+    const roles = await detectRoles(wallet.address);
+    if (!roles.isOperator && !roles.isAdmin) {
+      throw new Error("Ví đang kết nối không có quyền Vận hành (OPERATOR_ROLE) để cấp quyền đối tác.");
+    }
     // Đọc đúng giá trị bytes32 của role từ chính smart contract, tránh gõ tay sai
     const roleBytes = await wallet.contract[contractRoleName]();
-    const tx = await wallet.contract.grantRole(roleBytes, targetWallet);
+    btn.textContent = "Đang ký...";
+    const tx = await wallet.contract.grantRole(roleBytes, user.walletAddress);
     btn.textContent = "Đang xác nhận...";
     await tx.wait();
 
-    // Giao dịch on-chain đã thành công — giờ ghi lại trạng thái ở MongoDB để hiển thị
-    await authFetch(`${API_BASE}/api/auth/users/${userId}/approve`, { method: "PATCH" });
+    // Backend tự đọc hasRole() trên chain trước khi đánh dấu đã duyệt
+    const res = await authFetch(`${API_BASE}/api/auth/users/${user._id}/approve`, { method: "PATCH" });
+    if (!res.ok) throw new Error((await res.json()).error || "Không cập nhật được trạng thái duyệt");
     await loadUsers();
   } catch (err) {
     console.error(err);
@@ -328,6 +431,239 @@ async function approveUser(userId, targetRole, targetWallet, btn) {
     btn.textContent = "Cấp quyền";
   }
 }
+
+async function toggleDisableUser(user, btn) {
+  const disable = !user.disabled;
+  const msg = disable
+    ? `Khoá tài khoản ${user.username}? Mọi phiên đăng nhập của tài khoản này sẽ bị đăng xuất ngay.\n\n` +
+      "Lưu ý: khoá tài khoản web KHÔNG tước quyền on-chain của ví. Nếu nghi ví bị hack, vào mục Bảo mật → Gắn cờ ví."
+    : `Mở khoá tài khoản ${user.username}?`;
+  if (!window.confirm(msg)) return;
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/users/${user._id}/disable`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ disabled: disable }),
+    });
+    if (!res.ok) throw new Error((await res.json()).error || "Thao tác thất bại");
+    await loadUsers();
+  } catch (err) {
+    alert(err.message);
+    btn.disabled = false;
+  }
+}
+
+async function revokeSessions(user, btn) {
+  if (!window.confirm(`Đăng xuất ${user.username} khỏi mọi thiết bị?`)) return;
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/users/${user._id}/revoke-sessions`, { method: "POST" });
+    if (!res.ok) throw new Error((await res.json()).error || "Thao tác thất bại");
+    btn.textContent = "Đã đăng xuất ✓";
+  } catch (err) {
+    alert(err.message);
+    btn.disabled = false;
+  }
+}
+
+// --- Bảo mật & khẩn cấp (chỉ admin) ---
+
+const SEVERITY_STYLE = {
+  critical: "background:var(--seal-danger-soft); color:var(--seal-danger)",
+  warning: "background:#fff4dc; color:#8a5a00",
+  info: "",
+};
+const SEVERITY_LABEL = { critical: "Nghiêm trọng", warning: "Cảnh báo", info: "Thông tin" };
+
+async function loadSecurity() {
+  await Promise.all([loadContractSecurityState(), loadAuditLog(), loadCanaries()]);
+}
+
+async function loadCanaries() {
+  const tbody = document.querySelector("#canaryTable tbody");
+  try {
+    const res = await authFetch(`${API_BASE}/api/shop/canary`);
+    const list = await res.json();
+    if (!res.ok) throw new Error(list.error || "Không tải được đơn bẫy");
+    tbody.innerHTML = list.length
+      ? list
+          .map(
+            (o) => `<tr>
+          <td class="mono">#${esc(o.tokenId)}</td>
+          <td>${esc(o.buyerName)} · <span class="mono">${esc(o.buyerPhone)}</span></td>
+          <td style="font-size:0.8rem">${esc(new Date(o.createdAt).toLocaleString("vi-VN"))}</td>
+          <td>${o.revealCount ? `<span class="pill" style="background:var(--seal-danger-soft); color:var(--seal-danger)">${o.revealCount} lần ⚠</span>` : "0"}</td>
+          <td><button type="button" class="btn btn-outline canary-del" data-id="${esc(o._id)}" style="font-size:0.78rem; padding:5px 10px">Gỡ</button></td>
+        </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="5">Chưa có đơn bẫy nào.</td></tr>`;
+    tbody.querySelectorAll(".canary-del").forEach((b) =>
+      b.addEventListener("click", async () => {
+        if (!window.confirm("Gỡ đơn bẫy này?")) return;
+        await authFetch(`${API_BASE}/api/shop/canary/${b.dataset.id}`, { method: "DELETE" });
+        loadCanaries();
+      })
+    );
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--seal-danger)">Lỗi: ${esc(err.message)}</td></tr>`;
+  }
+}
+
+document.getElementById("canaryForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const statusEl = document.getElementById("canaryStatus");
+  try {
+    const res = await authFetch(`${API_BASE}/api/shop/canary`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tokenId: document.getElementById("cnToken").value,
+        buyerName: document.getElementById("cnName").value.trim(),
+        buyerPhone: document.getElementById("cnPhone").value.trim(),
+        buyerAddress: document.getElementById("cnAddress").value.trim(),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Không tạo được đơn bẫy");
+    showStatus(statusEl, "Đã tạo đơn bẫy.", true);
+    e.target.reset();
+    loadCanaries();
+  } catch (err) {
+    showStatus(statusEl, err.message, false);
+  }
+});
+
+async function loadContractSecurityState() {
+  const el = document.getElementById("contractSecurityState");
+  try {
+    const c = await getReadOnlyContract();
+    let paused = null;
+    try { paused = await c.paused(); } catch { /* contract cũ */ }
+    if (paused === null) {
+      el.innerHTML = `⚠ Contract đang dùng là bản cũ, chưa có chức năng dừng khẩn cấp / gắn cờ ví. Cần deploy lại bản bảo mật.`;
+      return;
+    }
+    el.innerHTML = paused
+      ? `<strong style="color:var(--seal-danger)">⏸ HỆ THỐNG ĐANG TẠM DỪNG</strong> — không ai mint/chuyển giao được cho tới khi Admin (multisig) mở lại.`
+      : `<strong style="color:var(--seal-verified)">● Đang hoạt động bình thường</strong>`;
+  } catch (err) {
+    el.textContent = "Không đọc được trạng thái contract: " + err.message;
+  }
+}
+
+async function loadAuditLog() {
+  const tbody = document.querySelector("#auditTable tbody");
+  const filter = document.getElementById("auditFilter").value;
+  tbody.innerHTML = `<tr><td colspan="4">Đang tải...</td></tr>`;
+  try {
+    const q = filter === "all" ? "" : `?severity=${filter}`;
+    const res = await authFetch(`${API_BASE}/api/auth/audit${q}`);
+    const logs = await res.json();
+    if (!res.ok) throw new Error(logs.error || "Không tải được nhật ký");
+    if (!logs.length) {
+      tbody.innerHTML = `<tr><td colspan="4">Chưa có sự kiện nào.</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = logs
+      .map(
+        (l) => `<tr>
+          <td style="white-space:nowrap; font-size:0.8rem">${esc(new Date(l.createdAt).toLocaleString("vi-VN"))}</td>
+          <td><span class="pill" style="${SEVERITY_STYLE[l.severity] || ""}">${esc(SEVERITY_LABEL[l.severity] || l.severity)}</span></td>
+          <td style="font-size:0.85rem">${esc(l.message)}
+            ${l.txHash ? `<br><a class="mono" style="font-size:0.75rem" target="_blank" rel="noopener noreferrer" href="https://sepolia.etherscan.io/tx/${esc(l.txHash)}">${esc(l.txHash.slice(0, 18))}…</a>` : ""}</td>
+          <td class="mono" style="font-size:0.75rem">${esc(l.username || "")}${l.wallet ? `<br>${esc(l.wallet)}` : ""}${l.ip ? `<br>IP ${esc(l.ip)}` : ""}</td>
+        </tr>`
+      )
+      .join("");
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--seal-danger)">Lỗi: ${esc(err.message)}</td></tr>`;
+  }
+}
+document.getElementById("auditFilter").addEventListener("change", loadAuditLog);
+
+async function runSecurityTx(statusEl, requiredRole, confirmText, send) {
+  if (!requireWallet()) return;
+  if (!window.confirm(confirmText)) return;
+  try {
+    const roles = await detectRoles(wallet.address);
+    const allowed = requiredRole === "guardian" ? roles.isGuardian : roles.isAdmin;
+    if (!allowed) {
+      throw new Error(
+        requiredRole === "guardian"
+          ? "Ví đang kết nối không có quyền Guardian."
+          : "Ví đang kết nối không có quyền Admin. Nếu admin là ví multisig (Safe), hãy thực hiện thao tác này trong app.safe.global."
+      );
+    }
+    showStatus(statusEl, "Vui lòng xác nhận giao dịch trong MetaMask...", true);
+    const tx = await send();
+    showStatus(statusEl, "Đang chờ xác nhận trên blockchain...", true);
+    await tx.wait();
+    showStatus(statusEl, `Thành công — Tx: ${tx.hash.slice(0, 14)}...`, true);
+    await loadSecurity();
+  } catch (err) {
+    console.error(err);
+    showStatus(statusEl, "Lỗi: " + explainContractError(err), false);
+  }
+}
+
+document.getElementById("pauseBtn").addEventListener("click", () => {
+  runSecurityTx(
+    document.getElementById("pauseStatus"),
+    "guardian",
+    "DỪNG KHẨN CẤP toàn hệ thống?\n\nMọi thao tác mint/chuyển giao sẽ bị chặn cho tới khi Admin (multisig) mở lại. Người tiêu dùng vẫn quét QR xác thực bình thường.",
+    () => wallet.contract.pause()
+  );
+});
+
+document.getElementById("unpauseBtn").addEventListener("click", () => {
+  runSecurityTx(
+    document.getElementById("pauseStatus"),
+    "admin",
+    "Mở lại hệ thống? Chỉ làm khi đã xử lý xong sự cố (đã gắn cờ / thu hồi quyền các ví bị hack).",
+    () => wallet.contract.unpause()
+  );
+});
+
+document.getElementById("flagForm").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const statusEl = document.getElementById("flagStatus");
+  const target = document.getElementById("flagWallet").value.trim();
+  const sinceInput = document.getElementById("flagSince").value;
+  if (!/^0x[a-fA-F0-9]{40}$/.test(target)) {
+    showStatus(statusEl, "Địa chỉ ví không hợp lệ.", false);
+    return;
+  }
+  const since = sinceInput ? Math.floor(new Date(sinceInput).getTime() / 1000) : 0;
+  if (since && since > Date.now() / 1000) {
+    showStatus(statusEl, "Thời điểm nghi lộ khoá không được ở tương lai.", false);
+    return;
+  }
+  runSecurityTx(
+    statusEl,
+    "guardian",
+    `Gắn cờ BỊ XÂM PHẠM cho ví ${target}?\n\n` +
+      `• Tước ngay quyền sản xuất / phân phối / vận hành của ví này\n` +
+      `• Mọi sản phẩm ví này mint/chuyển giao từ ${since ? new Date(since * 1000).toLocaleString("vi-VN") : "bây giờ"} sẽ hiện cảnh báo khi quét QR`,
+    () => wallet.contract.flagCompromised(target, since)
+  );
+});
+
+document.getElementById("clearFlagBtn").addEventListener("click", () => {
+  const statusEl = document.getElementById("flagStatus");
+  const target = document.getElementById("clearWallet").value.trim();
+  if (!/^0x[a-fA-F0-9]{40}$/.test(target)) {
+    showStatus(statusEl, "Địa chỉ ví cần gỡ cờ không hợp lệ.", false);
+    return;
+  }
+  runSecurityTx(
+    statusEl,
+    "admin",
+    `Gỡ cờ xâm phạm cho ví ${target}?\n\nChỉ làm khi đã điều tra và chắc chắn là báo nhầm. Gỡ cờ KHÔNG tự cấp lại quyền.`,
+    () => wallet.contract.clearCompromised(target)
+  );
+});
 
 // --- Đơn hàng (do người tiêu dùng đặt ở shop.html, không cần ví) ---
 
@@ -348,14 +684,16 @@ async function loadOrders() {
     }
     orders.forEach((o) => {
       const tr = document.createElement("tr");
+      tr.dataset.id = o._id;
       tr.innerHTML = `
         <td class="mono">#${esc(o.tokenId)}</td>
         <td>${esc(o.productName || "-")}</td>
-        <td>${esc(o.buyerName)}</td>
-        <td class="mono">${esc(o.buyerPhone)}</td>
-        <td style="max-width:200px">${esc(o.buyerAddress)}</td>
+        <td class="pii-name">${esc(o.buyerName)}</td>
+        <td class="mono pii-phone">${esc(o.buyerPhone)}</td>
+        <td style="max-width:200px" class="pii-address">${esc(o.buyerAddress)}</td>
         <td><span class="pill" style="${o.status === "da_giao" ? "background:var(--seal-verified-soft); color:var(--seal-verified)" : ""}">${esc(ORDER_STATUS_VI[o.status] || o.status)}</span></td>
-        <td>
+        <td style="display:flex; gap:6px; flex-wrap:wrap; align-items:center">
+          ${o.anonymized ? "" : `<button type="button" class="btn btn-outline reveal-btn" data-id="${esc(o._id)}" style="font-size:0.78rem; padding:5px 10px">👁 Xem đầy đủ</button>`}
           <select class="order-status-select" data-id="${esc(o._id)}" style="font-size:0.8rem; padding:6px">
             <option value="moi" ${o.status === "moi" ? "selected" : ""}>Mới đặt</option>
             <option value="da_xac_nhan" ${o.status === "da_xac_nhan" ? "selected" : ""}>Đã xác nhận</option>
@@ -366,6 +704,9 @@ async function loadOrders() {
       tbody.appendChild(tr);
     });
 
+    tbody.querySelectorAll(".reveal-btn").forEach((btn) => {
+      btn.addEventListener("click", () => revealOrderRow(btn));
+    });
     tbody.querySelectorAll(".order-status-select").forEach((sel) => {
       sel.addEventListener("change", async () => {
         try {
@@ -382,6 +723,37 @@ async function loadOrders() {
     });
   } catch (err) {
     tbody.innerHTML = `<tr><td colspan="7" style="color:var(--seal-danger)">Lỗi: ${esc(err.message)}</td></tr>`;
+  }
+}
+
+/** Mở xem đầy đủ 1 đơn — tự che lại sau 60 giây */
+async function revealOrderRow(btn) {
+  const tr = btn.closest("tr");
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`${API_BASE}/api/shop/orders/${btn.dataset.id}/reveal`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Không mở được thông tin");
+    const cells = {
+      name: tr.querySelector(".pii-name"),
+      phone: tr.querySelector(".pii-phone"),
+      address: tr.querySelector(".pii-address"),
+    };
+    const masked = { name: cells.name.textContent, phone: cells.phone.textContent, address: cells.address.textContent };
+    cells.name.textContent = data.buyerName;
+    cells.phone.textContent = data.buyerPhone;
+    cells.address.textContent = data.buyerAddress + (data.note ? ` — Ghi chú: ${data.note}` : "");
+    btn.textContent = "Đang hiện (60s)";
+    setTimeout(() => {
+      cells.name.textContent = masked.name;
+      cells.phone.textContent = masked.phone;
+      cells.address.textContent = masked.address;
+      btn.textContent = "👁 Xem đầy đủ";
+      btn.disabled = false;
+    }, 60 * 1000);
+  } catch (err) {
+    alert(err.message);
+    btn.disabled = false;
   }
 }
 
@@ -461,12 +833,16 @@ async function renderProductGrid() {
       <div class="product-card-actions">
           <a class="btn btn-outline" href="${esc(productQRCodeURL(p))}" target="_blank" rel="noopener noreferrer" style="font-size:0.82rem; padding:8px 12px">▦ Mã QR</a>
           <button class="btn btn-primary transfer-btn" data-token="${esc(p.tokenId)}" style="font-size:0.82rem; padding:8px 12px">➤ Chuyển giao</button>
+          ${p.mintedBy === wallet.address.toLowerCase() ? `<button class="btn btn-outline regen-code-btn" data-token="${esc(p.tokenId)}" data-name="${esc(p.name || "")}" data-qr="${esc(productQRCodeURL(p))}" style="font-size:0.82rem; padding:8px 12px" title="Cấp lại mã cào (tem cũ mất hiệu lực)">🎟 Mã cào</button>` : ""}
           <a class="btn btn-outline" href="${esc(window.getProductVerifyURL(p.tokenId))}" target="_blank" rel="noopener noreferrer" style="font-size:0.82rem; padding:8px 10px">↗</a>
       </div>
     `;
     grid.appendChild(card);
   });
 
+  grid.querySelectorAll(".regen-code-btn").forEach((btn) => {
+    btn.addEventListener("click", () => regenerateClaimCode(btn));
+  });
   grid.querySelectorAll(".transfer-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.getElementById("tTokenId").value = btn.dataset.token;
@@ -678,6 +1054,10 @@ document.getElementById("mintForm").addEventListener("submit", async (e) => {
     document.getElementById("qrImg").src = productQRCodeURL(record);
     document.getElementById("qrTokenId").textContent = `Token #${tokenId} — ${tx.hash.slice(0, 14)}...`;
     document.getElementById("qrPreview").classList.add("show");
+    showClaimCode(tokenId, record.claimCode, productQRCodeURL(record), payload.name);
+    if (!record.claimCode && record.claimCodeError) {
+      showStatus(statusEl, `Đã phát hành #${tokenId}, nhưng chưa tạo được mã cào: ${record.claimCodeError}`, false);
+    }
     document.getElementById("mintForm").reset();
     document.getElementById("mintPhotoPreview").innerHTML = "";
     await loadProducts();
@@ -735,3 +1115,386 @@ document.getElementById("transferForm").addEventListener("submit", async (e) => 
 
 loadProducts();
 loadPartners();
+
+// --- Tài khoản của tôi: 2FA, Telegram, phiên đăng nhập, đổi mật khẩu ---
+
+let myAccount = null;
+
+async function loadAccount() {
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/me`);
+    myAccount = await res.json();
+    if (!res.ok) throw new Error(myAccount.error || "Không tải được tài khoản");
+    renderMfaState();
+    renderTelegramState();
+    document.getElementById("pwCodeField").hidden = !myAccount.twoFactorEnabled;
+  } catch (err) {
+    document.getElementById("mfaState").textContent = "Lỗi: " + err.message;
+  }
+  loadSessions();
+}
+
+function renderMfaState() {
+  const on = myAccount.twoFactorEnabled;
+  document.getElementById("mfaState").innerHTML = on
+    ? `<strong style="color:var(--seal-verified)">● Đang bật</strong> — đăng nhập cần mã 6 số từ app trên điện thoại. Còn ${myAccount.backupCodesLeft} mã dự phòng.`
+    : `<strong style="color:var(--seal-danger)">● Chưa bật</strong> — lộ mật khẩu là người khác vào được tài khoản.` +
+      (authUser && authUser.role === "admin" ? " <strong>Tài khoản admin nên bật ngay.</strong>" : "");
+  document.getElementById("mfaStartBtn").hidden = on;
+  document.getElementById("mfaDisableBtn").hidden = !on;
+  document.getElementById("mfaNewBackupBtn").hidden = !on;
+  if (on) document.getElementById("mfaSetup").hidden = true;
+}
+
+function showBackupCodes(codes) {
+  document.getElementById("mfaBackupList").innerHTML = codes.map((c) => `<span>${esc(c)}</span>`).join("");
+  document.getElementById("mfaBackup").hidden = false;
+}
+
+document.getElementById("mfaStartBtn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("mfaStatus");
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/me/2fa/setup`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    document.getElementById("mfaQr").src = data.qrDataUrl;
+    document.getElementById("mfaSecret").textContent = data.secret.replace(/(.{4})/g, "$1 ").trim();
+    document.getElementById("mfaSetup").hidden = false;
+    document.getElementById("mfaEnableCode").focus();
+  } catch (err) {
+    showStatus(statusEl, err.message, false);
+  }
+});
+
+document.getElementById("mfaEnableBtn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("mfaStatus");
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/me/2fa/enable`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: document.getElementById("mfaEnableCode").value.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showStatus(statusEl, "Đã bật xác thực 2 lớp.", true);
+    showBackupCodes(data.backupCodes);
+    await loadAccount();
+  } catch (err) {
+    showStatus(statusEl, err.message, false);
+  }
+});
+
+document.getElementById("mfaNewBackupBtn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("mfaStatus");
+  const code = window.prompt("Nhập mã 6 số từ app Authenticator để tạo bộ mã dự phòng mới (bộ cũ sẽ mất hiệu lực):");
+  if (!code) return;
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/me/2fa/backup-codes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: code.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showBackupCodes(data.backupCodes);
+    await loadAccount();
+  } catch (err) {
+    showStatus(statusEl, err.message, false);
+  }
+});
+
+document.getElementById("mfaDisableBtn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("mfaStatus");
+  const password = window.prompt("Tắt xác thực 2 lớp làm tài khoản kém an toàn hơn.\nNhập MẬT KHẨU để tiếp tục:");
+  if (!password) return;
+  const code = window.prompt("Nhập mã 6 số từ app Authenticator:");
+  if (!code) return;
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/me/2fa/disable`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password, code: code.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showStatus(statusEl, "Đã tắt xác thực 2 lớp.", true);
+    document.getElementById("mfaBackup").hidden = true;
+    await loadAccount();
+  } catch (err) {
+    showStatus(statusEl, err.message, false);
+  }
+});
+
+function renderTelegramState() {
+  const linked = myAccount.telegramLinked;
+  document.getElementById("tgState").innerHTML = linked
+    ? `<strong style="color:var(--seal-verified)">● Đã liên kết</strong> — bạn sẽ nhận tin khi có đăng nhập từ nơi lạ, kèm nút "Không phải tôi" để khoá tài khoản ngay.`
+    : `<strong>● Chưa liên kết</strong> — liên kết để nhận cảnh báo đăng nhập lạ ngay trên điện thoại.`;
+  document.getElementById("tgLinkBtn").textContent = linked ? "Liên kết lại" : "Liên kết Telegram";
+  document.getElementById("tgUnlinkBtn").hidden = !linked;
+}
+
+document.getElementById("tgLinkBtn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("tgStatus");
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/me/telegram/link`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    window.open(data.url, "_blank", "noopener");
+    statusEl.className = "status-msg show ok";
+    statusEl.innerHTML =
+      `Đã mở Telegram — bấm <strong>Start</strong> trong cuộc trò chuyện với bot (link hết hạn sau ${data.expiresInMinutes} phút). ` +
+      `Không tự mở? <a href="${esc(data.url)}" target="_blank" rel="noopener noreferrer">Bấm vào đây</a>. Sau đó tải lại mục này.`;
+  } catch (err) {
+    showStatus(statusEl, err.message, false);
+  }
+});
+
+document.getElementById("tgUnlinkBtn").addEventListener("click", async () => {
+  if (!window.confirm("Huỷ liên kết Telegram? Bạn sẽ không nhận cảnh báo đăng nhập lạ nữa.")) return;
+  await authFetch(`${API_BASE}/api/auth/me/telegram`, { method: "DELETE" });
+  loadAccount();
+});
+
+const SESSION_STATE_VI = {
+  active: "Đang hoạt động",
+  idle: "Tự đăng xuất (không dùng)",
+  revoked: "Đã đăng xuất",
+  expired: "Hết hạn",
+};
+const REVOKE_REASON_VI = {
+  logout: "Đã đăng xuất",
+  user_revoked: "Bạn đã đăng xuất thiết bị này",
+  logout_all: "Đăng xuất tất cả",
+  password_changed: "Đổi mật khẩu",
+  not_me: "Báo không phải tôi",
+};
+
+async function loadSessions() {
+  const tbody = document.querySelector("#sessionsTable tbody");
+  const hist = document.querySelector("#loginHistoryTable tbody");
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/me/sessions`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    const t = (d) => esc(new Date(d).toLocaleString("vi-VN"));
+    tbody.innerHTML = data.active
+      .map(
+        (s) => `<tr>
+        <td>${esc(s.device)}${s.current ? ` <span class="pill" style="background:var(--seal-verified-soft); color:var(--seal-verified)">Thiết bị này</span>` : ""}</td>
+        <td class="mono" style="font-size:0.8rem">${esc(s.lastSeenIp)}${s.newIp ? ` <span class="pill" style="background:#fff4dc; color:#8a5a00">IP mới</span>` : ""}</td>
+        <td style="font-size:0.8rem">${t(s.createdAt)}</td>
+        <td style="font-size:0.8rem">${t(s.lastSeenAt)}</td>
+        <td>${s.current ? "" : `<button type="button" class="btn btn-outline session-revoke" data-id="${esc(s.id)}" style="font-size:0.78rem; padding:5px 10px">Đăng xuất</button>`}</td>
+      </tr>`
+      )
+      .join("");
+    hist.innerHTML = data.history
+      .map(
+        (s) => `<tr>
+        <td style="font-size:0.8rem">${t(s.createdAt)}</td>
+        <td>${esc(s.device)}</td>
+        <td class="mono" style="font-size:0.8rem">${esc(s.ip)}${s.newIp ? " ⚠" : ""}</td>
+        <td style="font-size:0.8rem">${esc(s.state === "revoked" ? REVOKE_REASON_VI[s.revokedReason] || "Đã đăng xuất" : SESSION_STATE_VI[s.state])}</td>
+      </tr>`
+      )
+      .join("");
+    tbody.querySelectorAll(".session-revoke").forEach((b) =>
+      b.addEventListener("click", async () => {
+        if (!window.confirm("Đăng xuất thiết bị này? Nếu bạn không nhận ra thiết bị, hãy đổi mật khẩu ngay sau đó.")) return;
+        await authFetch(`${API_BASE}/api/auth/me/sessions/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
+        loadSessions();
+      })
+    );
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--seal-danger)">Lỗi: ${esc(err.message)}</td></tr>`;
+  }
+}
+
+document.getElementById("logoutAllBtn").addEventListener("click", async () => {
+  if (!window.confirm("Đăng xuất khỏi TẤT CẢ thiết bị, kể cả thiết bị này?")) return;
+  await authFetch(`${API_BASE}/api/auth/me/logout-all`, { method: "POST" });
+  localStorage.removeItem("authToken");
+  localStorage.removeItem("authUser");
+  window.location.href = "login.html";
+});
+
+document.getElementById("pwForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const statusEl = document.getElementById("pwStatus");
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/me/password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        currentPassword: document.getElementById("pwCurrent").value,
+        newPassword: document.getElementById("pwNew").value,
+        code: document.getElementById("pwCode").value.trim(),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    localStorage.setItem("authToken", data.token);
+    showStatus(statusEl, "Đã đổi mật khẩu. Mọi thiết bị khác đã bị đăng xuất.", true);
+    e.target.reset();
+    loadSessions();
+  } catch (err) {
+    showStatus(statusEl, err.message, false);
+  }
+});
+
+// --- Banner cảnh báo "đăng nhập từ nơi lạ" (hiện ngay khi mở trang) ---
+
+async function loadSecurityNotices() {
+  const box = document.getElementById("securityNotice");
+  const list = document.getElementById("securityNoticeList");
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/me/security-notices`);
+    const notices = await res.json();
+    if (!res.ok || !notices.length) {
+      box.hidden = true;
+      return;
+    }
+    list.innerHTML = notices
+      .map(
+        (n) => `<div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; padding:8px 0; border-top:1px solid var(--line)">
+        <div><strong>${esc(new Date(n.createdAt).toLocaleString("vi-VN"))}</strong> · ${esc(n.device)} · IP <span class="mono">${esc(n.ip)}</span>${n.state === "active" ? " · <em>vẫn đang đăng nhập</em>" : ""}</div>
+        <div style="display:flex; gap:8px">
+          <button type="button" class="btn btn-outline notice-ok" data-id="${esc(n.id)}" style="font-size:0.8rem; padding:6px 12px">Đúng là tôi</button>
+          <button type="button" class="btn btn-danger notice-notme" data-id="${esc(n.id)}" style="font-size:0.8rem; padding:6px 12px">Không phải tôi</button>
+        </div>
+      </div>`
+      )
+      .join("");
+    box.hidden = false;
+    list.querySelectorAll(".notice-ok").forEach((b) =>
+      b.addEventListener("click", async () => {
+        await authFetch(`${API_BASE}/api/auth/me/security-notices/ack`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids: [b.dataset.id] }),
+        });
+        loadSecurityNotices();
+      })
+    );
+    list.querySelectorAll(".notice-notme").forEach((b) =>
+      b.addEventListener("click", async () => {
+        if (!window.confirm("Xác nhận KHÔNG PHẢI BẠN? Mọi thiết bị khác sẽ bị đăng xuất ngay, quản trị viên được báo, và bạn cần đổi mật khẩu.")) return;
+        await authFetch(`${API_BASE}/api/auth/me/not-me`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: b.dataset.id }),
+        });
+        alert("Đã đăng xuất mọi thiết bị khác và báo quản trị viên. Hãy ĐỔI MẬT KHẨU ngay ở mục Tài khoản của tôi.");
+        loadSecurityNotices();
+        goToSection("account");
+        document.getElementById("pwCurrent").focus();
+      })
+    );
+  } catch {
+    box.hidden = true;
+  }
+}
+loadSecurityNotices();
+
+// --- Mã cào dùng 1 lần ---
+
+let lastClaimLabel = null;
+
+function showClaimCode(tokenId, code, qrUrl, name) {
+  const box = document.getElementById("claimCodeBox");
+  if (!code) {
+    box.hidden = true;
+    return;
+  }
+  lastClaimLabel = { tokenId, code, qrUrl, name };
+  document.getElementById("claimCodeValue").textContent = code;
+  box.hidden = false;
+}
+
+/** Mở trang in tem: QR + mã cào + hướng dẫn. Ô mã cào in khung để dán lớp bạc phủ lên. */
+function printClaimLabel(label) {
+  const w = window.open("", "_blank", "width=420,height=600");
+  if (!w) {
+    alert("Trình duyệt chặn cửa sổ in — cho phép pop-up rồi thử lại.");
+    return;
+  }
+  const qr = new URL(label.qrUrl, window.location.href).href;
+  w.document.write(`<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>Tem #${esc(label.tokenId)}</title>
+  <style>
+    body{font-family:Arial,sans-serif;margin:0;padding:16px}
+    .tem{width:62mm;border:1px dashed #999;padding:4mm;text-align:center}
+    .tem img{width:40mm;height:40mm}
+    .name{font-size:9pt;font-weight:bold;margin:2mm 0 1mm}
+    .id{font-size:7pt;color:#555}
+    .scratch{margin:3mm auto 2mm;border:1.5px solid #000;border-radius:2mm;padding:2.5mm 1mm;font:bold 13pt "Courier New",monospace;letter-spacing:1px}
+    .hd{font-size:6.5pt;line-height:1.35;text-align:left}
+    @media print{.noprint{display:none}}
+  </style></head><body>
+  <div class="tem">
+    <img src="${esc(qr)}" alt="QR">
+    <div class="name">${esc(label.name || "")}</div>
+    <div class="id">Token #${esc(label.tokenId)}</div>
+    <div class="scratch">${esc(label.code)}</div>
+    <div class="hd">① Cào lớp bạc ② Quét mã QR ③ Nhập mã để xác thực &amp; đăng ký chủ sở hữu.<br><b>KHÔNG MUA nếu lớp cào đã bị cào.</b></div>
+  </div>
+  <p class="noprint" style="font-size:12px;color:#555">Dán lớp phủ cào (scratch-off sticker) lên ô có viền đen.</p>
+  <button class="noprint" onclick="window.print()">In</button>
+  <script>
+    // Chỉ in khi ảnh QR đã tải xong — in sớm sẽ ra tem THIẾU mã QR
+    (function () {
+      var img = document.querySelector("img");
+      function go() { setTimeout(function () { window.print(); }, 150); }
+      if (img.complete && img.naturalWidth) go();
+      else { img.onload = go; img.onerror = function () { alert("Không tải được ảnh mã QR — kiểm tra kết nối rồi bấm In lại."); }; }
+    })();
+  <\/script>
+  </body></html>`);
+  w.document.close();
+}
+
+document.getElementById("printLabelBtn").addEventListener("click", () => {
+  if (lastClaimLabel) printClaimLabel(lastClaimLabel);
+});
+
+async function regenerateClaimCode(btn) {
+  if (
+    !window.confirm(
+      `Cấp lại mã cào cho sản phẩm #${btn.dataset.token}?\n\n` +
+        "Mã/tem CŨ sẽ mất hiệu lực ngay — chỉ làm khi tem in hỏng hoặc nghi mã bị lộ, và sản phẩm CHƯA được người mua kích hoạt."
+    )
+  )
+    return;
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`${API_BASE}/api/products/${encodeURIComponent(btn.dataset.token)}/claim-code`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Không cấp lại được mã");
+    const label = { tokenId: btn.dataset.token, code: data.claimCode, qrUrl: btn.dataset.qr, name: btn.dataset.name };
+    if (window.confirm(`Mã cào mới (chỉ hiện 1 lần):\n\n${data.claimCode}\n\nBấm OK để in tem ngay.`)) {
+      printClaimLabel(label);
+    }
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("recoverForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const statusEl = document.getElementById("recoverStatus");
+  const tokenId = document.getElementById("recoverToken").value;
+  if (!window.confirm(`Bạn ĐÃ gọi điện xác minh đúng chủ sở hữu sản phẩm #${tokenId}?\nLink khôi phục cũ (nếu có) sẽ mất hiệu lực.`)) return;
+  try {
+    const res = await authFetch(`${API_BASE}/api/products/${encodeURIComponent(tokenId)}/claim/recover`, { method: "POST" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    statusEl.className = "status-msg show ok";
+    statusEl.innerHTML =
+      `Liên hệ khách đăng ký: <strong>${esc(data.contactMasked || "không có")}</strong> — chỉ gửi link nếu khớp.<br>` +
+      `Link (gửi riêng cho khách, mở trên điện thoại mới): <span class="mono">${esc(data.link)}</span>`;
+  } catch (err) {
+    showStatus(statusEl, err.message, false);
+  }
+});

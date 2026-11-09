@@ -16,15 +16,32 @@ const orderSchema = new mongoose.Schema(
     tokenId: { type: String, required: true, maxlength: 64 },
     productName: { type: String, default: "", maxlength: 200 },
     productCode: { type: String, default: "", maxlength: 100 },
-    buyerName: { type: String, required: true, maxlength: 120 },
-    buyerPhone: { type: String, required: true, maxlength: 15 },
-    buyerAddress: { type: String, required: true, maxlength: 500 },
-    note: { type: String, default: "", maxlength: 1000 },
+
+    // Thông tin cá nhân người mua — lưu dạng MÃ HOÁ AES-256-GCM ("enc:v1:...").
+    // Lộ bản sao database cũng không đọc được nếu không có DATA_ENCRYPTION_KEY.
+    buyerName: { type: String, required: true },
+    buyerPhone: { type: String, required: true },
+    buyerAddress: { type: String, required: true },
+    note: { type: String, default: "" },
+
+    // Bản đã che để hiển thị danh sách (không cần giải mã)
+    buyerNameMasked: { type: String, default: "" },
+    buyerPhoneMasked: { type: String, default: "" },
+    buyerAddressMasked: { type: String, default: "" },
+
     status: {
       type: String,
       enum: ["moi", "da_xac_nhan", "da_giao"],
       default: "moi",
     },
+    deliveredAt: { type: Date, default: null },
+    // Đã xoá thông tin cá nhân theo chính sách lưu trữ
+    anonymizedAt: { type: Date, default: null },
+    // Số lần có người bấm "Xem đầy đủ"
+    revealCount: { type: Number, default: 0 },
+    // Đơn BẪY (canary) do admin tạo — trông như đơn thật. Bất kỳ ai mở xem
+    // đầy đủ đơn này đều kích hoạt báo động. Không bao giờ trả trường này ra API.
+    isCanary: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

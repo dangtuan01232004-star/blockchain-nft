@@ -79,6 +79,20 @@
         ⚠️ <span id="suspiciousText"></span>
       </div>
 
+      <!-- Mã cào dùng 1 lần: kích hoạt quyền sở hữu -->
+      <div class="claim-box" id="claimBox" hidden>
+        <div class="claim-title" id="claimTitle"></div>
+        <div class="claim-text" id="claimText"></div>
+        <form id="claimForm" hidden>
+          <input type="text" id="claimCode" autocomplete="off" autocapitalize="characters" spellcheck="false"
+                 placeholder="Mã dưới lớp cào, ví dụ K7QM-4XPA-9R" maxlength="16" required>
+          <input type="text" id="claimContact" autocomplete="tel" placeholder="SĐT hoặc email (không bắt buộc — để khôi phục khi đổi điện thoại)" maxlength="120">
+          <button type="submit" class="btn btn-primary" id="claimSubmit">Kích hoạt &amp; xác nhận chủ sở hữu</button>
+        </form>
+        <button type="button" class="btn btn-danger" id="reportBtn" hidden>Báo nghi hàng giả</button>
+        <div class="claim-msg" id="claimMsg" role="status" aria-live="polite"></div>
+      </div>
+
       <div class="tabs">
         <button class="tab-btn active" data-tab="info" type="button">Thông tin sản phẩm</button>
         <button class="tab-btn" data-tab="trace" type="button">Truy xuất nguồn gốc</button>
@@ -153,6 +167,120 @@
     return id;
   }
 
+  // --- Mã cào: lưu "chìa khoá chủ sở hữu" của từng sản phẩm trên máy này ---
+  function getOwnerToken(tokenId) {
+    try { return localStorage.getItem(`ownerToken:${tokenId}`) || ""; } catch { return ""; }
+  }
+  function setOwnerToken(tokenId, token) {
+    try { localStorage.setItem(`ownerToken:${tokenId}`, token); } catch { /* chế độ ẩn danh */ }
+  }
+  // Link khôi phục do admin gửi: verify.html?tokenId=5#owner=<token>
+  // (token để sau dấu # nên không bị gửi lên server hay lưu trong log)
+  (function readRecoveryLink() {
+    const m = /[#&]owner=([A-Za-z0-9_-]{20,})/.exec(window.location.hash || "");
+    const tid = new URLSearchParams(window.location.search).get("tokenId");
+    if (m && tid) {
+      setOwnerToken(tid, m[1]);
+      history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  })();
+
+  let currentTokenId = null;
+
+  function fmtDate(d) {
+    return d ? new Date(d).toLocaleString("vi-VN") : "";
+  }
+
+  function renderClaim(data) {
+    const box = document.getElementById("claimBox");
+    const form = document.getElementById("claimForm");
+    const reportBtn = document.getElementById("reportBtn");
+    const title = document.getElementById("claimTitle");
+    const text = document.getElementById("claimText");
+    document.getElementById("claimMsg").textContent = "";
+    currentTokenId = data.tokenId;
+    const c = data.claim || {};
+    box.hidden = true;
+    form.hidden = true;
+    reportBtn.hidden = true;
+    box.className = "claim-box";
+    if (!data.found || data.authentic === false || !c.status || c.status === "no_code" || c.status === "unknown") return;
+
+    box.hidden = false;
+    if (c.status === "unclaimed") {
+      box.classList.add("claim-open");
+      title.textContent = "🎟 Sản phẩm chưa có chủ sở hữu";
+      text.innerHTML =
+        "<b>Đã mua?</b> Cào lớp bạc trên tem rồi nhập mã để xác nhận bạn là chủ sở hữu.<br>" +
+        "<b>Đang xem ở cửa hàng?</b> Kiểm tra lớp cào còn nguyên — <b>nếu đã bị cào, đừng mua</b>.";
+      form.hidden = false;
+    } else if (c.status === "owner") {
+      box.classList.add("claim-owner");
+      title.textContent = "✅ Đây là sản phẩm của bạn";
+      text.textContent = `Bạn đã kích hoạt sản phẩm này lúc ${fmtDate(c.claimedAt)}. Mã cào đã được dùng — không ai khác kích hoạt lại được.`;
+    } else if (c.status === "claimed_by_other") {
+      box.classList.add("claim-taken");
+      title.textContent = "⚠️ Sản phẩm này đã có chủ sở hữu";
+      text.innerHTML =
+        `Mã cào của sản phẩm đã được kích hoạt lúc <b>${fmtDate(c.claimedAt)}</b>.<br>` +
+        "Nếu bạn <b>vừa mua hàng mới</b> và vừa tự cào tem, đây có thể là <b>hàng giả dùng lại mã QR của hàng thật</b> — đừng nhận hàng / liên hệ người bán và bấm báo cáo bên dưới.<br>" +
+        "<span style='opacity:.8'>Nếu bạn mua lại đồ đã qua sử dụng hoặc đang xem giúp người khác thì thông báo này là bình thường.</span>";
+      reportBtn.hidden = false;
+    } else if (c.status === "locked") {
+      box.classList.add("claim-taken");
+      title.textContent = "🔒 Tạm khoá nhập mã";
+      text.textContent = "Mã của sản phẩm này bị nhập sai quá nhiều lần nên tạm khoá 1 giờ để chống đoán mã. Vui lòng thử lại sau.";
+    }
+  }
+
+  document.getElementById("claimForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = document.getElementById("claimMsg");
+    const btn = document.getElementById("claimSubmit");
+    btn.disabled = true;
+    msg.textContent = "Đang kiểm tra mã...";
+    try {
+      const res = await fetch(`${API_BASE}/api/products/${encodeURIComponent(currentTokenId)}/claim`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code: document.getElementById("claimCode").value,
+          contact: document.getElementById("claimContact").value,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.ownerToken) {
+        setOwnerToken(currentTokenId, data.ownerToken);
+        checkToken(currentTokenId);
+        return;
+      }
+      msg.textContent = data.error || "Không kích hoạt được.";
+      if (data.claimStatus === "claimed_by_other" || data.claimStatus === "locked") checkToken(currentTokenId);
+    } catch {
+      msg.textContent = "Không kết nối được máy chủ, vui lòng thử lại.";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById("reportBtn").addEventListener("click", async () => {
+    const note = window.prompt("Mô tả ngắn (mua ở đâu, khi nào, tem thế nào...) — không bắt buộc:", "");
+    if (note === null) return;
+    const msg = document.getElementById("claimMsg");
+    try {
+      const res = await fetch(`${API_BASE}/api/products/${encodeURIComponent(currentTokenId)}/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: note }),
+      });
+      const data = await res.json();
+      msg.textContent = res.ok ? "Đã gửi báo cáo tới nhà sản xuất. Cảm ơn bạn!" : data.error || "Không gửi được báo cáo.";
+      if (res.ok) document.getElementById("reportBtn").hidden = true;
+    } catch {
+      msg.textContent = "Không kết nối được máy chủ.";
+    }
+  });
+
   async function checkToken(tokenId) {
     clearError();
     resultEl.classList.remove("show", "authentic", "fake");
@@ -162,9 +290,18 @@
     }
     try {
       const deviceId = getDeviceId();
-      const res = await fetch(`${API_BASE}/api/products/verify/${encodeURIComponent(tokenId)}?deviceId=${encodeURIComponent(deviceId)}`);
+      const ownerToken = getOwnerToken(tokenId);
+      const res = await fetch(`${API_BASE}/api/products/verify/${encodeURIComponent(tokenId)}?deviceId=${encodeURIComponent(deviceId)}`, {
+        headers: ownerToken ? { "X-Owner-Token": ownerToken } : {},
+      });
       const data = await res.json();
       document.getElementById("lookupStatus").hidden = true;
+      if (res.status === 503 || data.found === null) {
+        // Lỗi kết nối blockchain — KHÔNG kết luận hàng giả
+        document.body.classList.remove("product-lookup");
+        showError(data.message || "Tạm thời không kiểm tra được trên blockchain. Vui lòng thử lại sau.");
+        return;
+      }
       renderResult(data);
     } catch (err) {
       document.body.classList.remove("product-lookup");
@@ -201,6 +338,15 @@
       document.getElementById("resultSub").textContent = data.found
         ? "Đã bị thu hồi xác thực"
         : "Không tìm thấy trên blockchain — nghi ngờ hàng giả";
+    } else if (data.security && data.security.suspect) {
+      // Sản phẩm tồn tại, chưa bị thu hồi, nhưng có ít nhất 1 bước do một ví
+      // ĐÃ BỊ GẮN CỜ "bị xâm phạm" ký → có thể là hàng giả do kẻ tấn công
+      // mint/chuyển giao bằng ví bị hack. Chưa kết luận, đang kiểm tra.
+      resultEl.classList.remove("authentic");
+      resultEl.classList.add("fake");
+      document.getElementById("sealIcon").textContent = "!";
+      document.getElementById("resultSub").textContent =
+        "Đang được kiểm tra — liên quan tới tài khoản bị xâm phạm. Chưa nên mua.";
     } else {
       resultEl.classList.remove("fake");
       resultEl.classList.add("authentic");
@@ -213,14 +359,34 @@
     // quá nhiều thiết bị khác nhau, dấu hiệu cho thấy có thể đã bị sao chép
     // sang nhiều sản phẩm giả khác (xem backend/src/services/scanGuard.js).
     const warningEl = document.getElementById("suspiciousWarning");
+    const warnings = [];
+    if (data.security && data.security.suspect) {
+      const since = data.security.compromisedSince
+        ? new Date(data.security.compromisedSince).toLocaleString("vi-VN")
+        : "";
+      warnings.push(
+        `Một bước trong hành trình của sản phẩm này (bước ${Number(data.security.suspectStep) + 1}) được thực hiện ` +
+        `bởi tài khoản đã bị hệ thống xác định là bị xâm phạm${since ? ` (từ ${since})` : ""}. ` +
+        `Sản phẩm có thể không chính hãng — nhà sản xuất đang kiểm tra lại.`
+      );
+    }
     if (data.scan && data.scan.suspicious) {
-      document.getElementById("suspiciousText").textContent =
+      warnings.push(
         `Mã QR này đã được quét từ ${data.scan.distinctDevices} thiết bị khác nhau (${data.scan.totalScans} lượt) — ` +
-        `nhiều bất thường so với một sản phẩm vật lý duy nhất. Có thể mã QR đã bị sao chép sang hàng giả khác.`;
+        `nhiều bất thường so với một sản phẩm vật lý duy nhất. Có thể mã QR đã bị sao chép sang hàng giả khác.`
+      );
+    }
+    if (data.security && data.security.paused) {
+      warnings.push("Hệ thống đang tạm dừng ghi dữ liệu để xử lý sự cố bảo mật. Thông tin hiển thị vẫn là dữ liệu gốc trên blockchain.");
+    }
+    if (warnings.length) {
+      document.getElementById("suspiciousText").textContent = warnings.join(" ");
       warningEl.style.display = "block";
     } else {
       warningEl.style.display = "none";
     }
+
+    renderClaim(data);
 
     document.getElementById("dCode").textContent = data.productCode || "-";
     document.getElementById("dManufacturer").textContent = (data.metadata && data.metadata.manufacturer) || "-";

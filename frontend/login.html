@@ -67,6 +67,11 @@
           </div>
         </div>
 
+        <div class="field" id="mfaField" style="display:none">
+          <label for="mfaCode">Mã xác thực 2 lớp</label>
+          <input type="text" id="mfaCode" inputmode="numeric" autocomplete="one-time-code" placeholder="6 số trong app Authenticator, hoặc mã dự phòng">
+        </div>
+
         <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center" id="submitBtn">Đăng nhập</button>
       </form>
 
@@ -79,6 +84,7 @@
 <script>
   const API_BASE = window.API_BASE || `http://${window.location.hostname}:4000`;
   let mode = "login"; // hoặc "register"
+  let mfaToken = null; // có khi tài khoản bật 2FA và đã qua bước mật khẩu
 
   const errorNote = document.getElementById("errorNote");
   function showError(msg) { errorNote.textContent = msg; errorNote.classList.add("show"); }
@@ -86,6 +92,7 @@
 
   document.getElementById("toggleMode").addEventListener("click", () => {
     mode = mode === "login" ? "register" : "login";
+    resetMfa();
     document.getElementById("formTitle").textContent = mode === "login" ? "Đăng nhập quản trị" : "Đăng ký tài khoản mới";
     document.getElementById("registerFields").style.display = mode === "register" ? "block" : "none";
     document.getElementById("submitBtn").textContent = mode === "login" ? "Đăng nhập" : "Đăng ký";
@@ -106,13 +113,28 @@
     }
 
     try {
-      const res = await fetch(`${API_BASE}/api/auth/${mode}`, {
+      // Bước 2: đã qua mật khẩu, đang nhập mã 2FA
+      const isMfaStep = mode === "login" && mfaToken;
+      const res = await fetch(`${API_BASE}/api/auth/${isMfaStep ? "login/2fa" : mode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(isMfaStep ? { mfaToken, code: document.getElementById("mfaCode").value.trim() } : payload),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Lỗi không xác định");
+      if (!res.ok) {
+        if (isMfaStep && res.status === 401 && /hết hạn|đăng nhập lại/.test(data.error || "")) resetMfa();
+        throw new Error(data.error || "Lỗi không xác định");
+      }
+
+      if (data.twoFactorRequired) {
+        mfaToken = data.mfaToken;
+        document.getElementById("mfaField").style.display = "block";
+        document.getElementById("username").readOnly = true;
+        document.getElementById("password").readOnly = true;
+        document.getElementById("submitBtn").textContent = "Xác nhận mã";
+        document.getElementById("mfaCode").focus();
+        return;
+      }
 
       localStorage.setItem("authToken", data.token);
       localStorage.setItem("authUser", JSON.stringify(data.user));
@@ -121,6 +143,15 @@
       showError(err.message);
     }
   });
+
+  function resetMfa() {
+    mfaToken = null;
+    document.getElementById("mfaField").style.display = "none";
+    document.getElementById("mfaCode").value = "";
+    document.getElementById("username").readOnly = false;
+    document.getElementById("password").readOnly = false;
+    document.getElementById("submitBtn").textContent = "Đăng nhập";
+  }
 
   // Nếu đã đăng nhập rồi, vào thẳng admin.html luôn không cần đăng nhập lại
   if (localStorage.getItem("authToken")) {

@@ -1281,3 +1281,20 @@ body.app-theme .qr-preview img { border-radius: 12px; }
   line-height: 1.5;
   margin: -8px 0 18px;
 }
+
+/* Thuộc tính hidden luôn thắng các class đặt display (vd .btn) */
+[hidden] { display: none !important; }
+
+/* --- Mã cào dùng 1 lần (verify.html) --- */
+.claim-box { margin: 14px 0 6px; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--line); font-size: 0.88rem; line-height: 1.5; text-align: left; }
+.claim-box.claim-open { background: #EEF4FF; border-color: #BFD3FF; }
+.claim-box.claim-owner { background: var(--seal-verified-soft); border-color: var(--seal-verified); }
+.claim-box.claim-taken { background: #FEF3C7; border-color: #FBBF24; color: #78350F; }
+.claim-title { font-weight: 700; margin-bottom: 4px; }
+.claim-box form { display: grid; gap: 8px; margin-top: 10px; }
+.claim-box input { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 0.95rem; box-sizing: border-box; }
+.claim-box #claimCode { font-family: "Courier New", monospace; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.claim-box .btn { justify-content: center; margin-top: 10px; }
+.claim-box form .btn { margin-top: 0; }
+.claim-msg { margin-top: 8px; font-weight: 600; }
+.claim-msg:empty { display: none; }

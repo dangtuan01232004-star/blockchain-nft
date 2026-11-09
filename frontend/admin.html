@@ -6,7 +6,8 @@
 <title>Quản trị — NFTTrace</title>
 <link rel="stylesheet" href="css/styles.css">
 <script src="js/config.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.0/dist/ethers.umd.min.js"></script>
+<!-- ethers.js đặt ngay trong project (không tải từ CDN) — tránh CDN bị tráo mã độc vào trang admin, nơi ký giao dịch -->
+<script src="js/vendor/ethers-6.17.0.umd.min.js"></script>
 </head>
 <body class="app-theme">
 
@@ -34,7 +35,9 @@
       <button class="dash-nav-item active" data-section="products" type="button">📦 Sản phẩm của tôi</button>
       <button class="dash-nav-item" data-section="orders" type="button">🛒 Đơn hàng</button>
       <button class="dash-nav-item" data-section="partners" type="button">🤝 Danh bạ đối tác</button>
+      <button class="dash-nav-item" data-section="account" type="button" id="accountNavItem">👤 Tài khoản của tôi</button>
       <button class="dash-nav-item" data-section="users" type="button" id="usersNavItem" style="display:none">🛡️ Quản lý người dùng</button>
+      <button class="dash-nav-item" data-section="security" type="button" id="securityNavItem" style="display:none">🚨 Bảo mật &amp; khẩn cấp</button>
       <a class="dash-nav-item" href="verify.html" target="_blank">🔍 Xác thực sản phẩm ↗</a>
       <a class="dash-nav-item" href="shop.html" target="_blank">🛍️ Trang mua hàng ↗</a>
     </nav>
@@ -58,6 +61,12 @@
 
   <main class="dash-main">
 
+    <div id="securityNotice" class="panel" hidden style="margin-bottom:20px; border:1.5px solid var(--seal-danger); background:var(--seal-danger-soft)">
+      <h2 style="color:var(--seal-danger); margin-top:0">🔐 Tài khoản của bạn vừa đăng nhập từ nơi lạ</h2>
+      <p class="section-sub" style="margin:0 0 10px">Kiểm tra các lần đăng nhập dưới đây. Nếu có lần nào không phải bạn, bấm <strong>Không phải tôi</strong>: mọi thiết bị khác sẽ bị đăng xuất ngay và bạn cần đổi mật khẩu.</p>
+      <div id="securityNoticeList"></div>
+    </div>
+
     <section id="section-products">
       <div class="dash-main-header">
         <h1>Sản phẩm của tôi</h1>
@@ -68,7 +77,7 @@
       <div class="panel" id="revokePanel" hidden style="margin-top:22px">
         <h2>Thu hồi xác thực sản phẩm</h2>
         <p class="section-sub">
-          Chỉ ví có quyền Admin trên smart contract mới được thực hiện. Việc thu hồi không thể hoàn tác
+          Chỉ ví có quyền Guardian hoặc Admin trên smart contract mới được thực hiện. Việc thu hồi không thể hoàn tác
           và sẽ chặn mọi thao tác chuyển giao tiếp theo.
         </p>
         <form id="revokeForm">
@@ -94,7 +103,8 @@
       </div>
       <p class="section-sub">Đăng ký tên + địa chỉ ví của từng đơn vị phân phối/bán lẻ — dùng để chọn nhanh khi chuyển giao, không phải gõ tay.</p>
 
-      <div class="panel" style="margin-bottom:20px">
+      <div class="panel" id="partnerFormPanel" style="margin-bottom:20px; display:none">
+        <p class="section-sub" style="margin-top:0">Chỉ admin được thêm đối tác — tránh trường hợp tài khoản bị chiếm thêm ví lạ vào danh bạ để hàng bị chuyển nhầm.</p>
         <form id="partnerForm" style="display:grid; grid-template-columns:1.2fr 1.6fr 1fr auto; gap:10px; align-items:end">
           <div class="field" style="margin-bottom:0">
             <label>Tên đối tác</label>
@@ -131,6 +141,10 @@
         Đơn do người tiêu dùng đặt trực tiếp ở trang "Mua hàng" (không cần ví, không cần đăng nhập).
         Sau khi đã liên hệ và giao hàng thực tế, cập nhật trạng thái tương ứng bên dưới.
       </p>
+      <p class="section-sub" style="font-size:0.85rem">
+        🔒 Thông tin người mua được <strong>che mặc định</strong> và mã hoá khi lưu. Bấm <em>Xem đầy đủ</em> khi cần liên hệ giao hàng —
+        mỗi lần xem đều được ghi lại. Thông tin cá nhân tự động bị xoá sau khi giao hàng một thời gian.
+      </p>
       <table id="ordersTable">
         <thead><tr><th>Token</th><th>Sản phẩm</th><th>Người nhận</th><th>SĐT</th><th>Địa chỉ</th><th>Trạng thái</th><th></th></tr></thead>
         <tbody></tbody>
@@ -150,6 +164,189 @@
         <thead><tr><th>Tài khoản</th><th>Vai trò đăng ký</th><th>Địa chỉ ví</th><th>Trạng thái</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
+    </section>
+
+
+    <section id="section-account" style="display:none">
+      <div class="dash-main-header">
+        <h1>Tài khoản của tôi</h1>
+      </div>
+      <p class="section-sub">Bảo vệ tài khoản: xác thực 2 lớp, nhận cảnh báo đăng nhập qua Telegram, xem và đăng xuất các thiết bị đang đăng nhập.</p>
+
+      <div class="panel" style="margin-bottom:20px">
+        <h2>Xác thực 2 lớp (2FA)</h2>
+        <p class="section-sub" id="mfaState">Đang tải...</p>
+        <div id="mfaSetup" hidden>
+          <p class="section-sub">1. Cài app <strong>Google Authenticator</strong> hoặc <strong>Microsoft Authenticator</strong> trên điện thoại.<br>
+          2. Quét mã QR dưới đây (hoặc nhập tay khoá bên cạnh).<br>3. Nhập mã 6 số app hiện ra để xác nhận.</p>
+          <div style="display:flex; gap:18px; align-items:center; flex-wrap:wrap">
+            <img id="mfaQr" alt="Mã QR cài 2FA" style="width:180px; height:180px; background:#fff; border-radius:12px; padding:6px">
+            <div>
+              <div class="section-sub" style="margin:0 0 6px">Khoá nhập tay:</div>
+              <div class="mono" id="mfaSecret" style="word-break:break-all; font-size:0.85rem; margin-bottom:12px"></div>
+              <div style="display:flex; gap:8px">
+                <input type="text" id="mfaEnableCode" inputmode="numeric" maxlength="6" placeholder="6 số" style="width:120px">
+                <button type="button" class="btn btn-primary" id="mfaEnableBtn">Xác nhận bật</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div id="mfaBackup" hidden style="margin-top:14px; padding:12px; border-radius:12px; background:#fff4dc; color:#5c3d00">
+          <strong>Mã dự phòng — chỉ hiện 1 lần, hãy lưu lại ngay.</strong> Dùng khi mất điện thoại; mỗi mã dùng được 1 lần.
+          <div class="mono" id="mfaBackupList" style="margin-top:8px; display:grid; grid-template-columns:repeat(4, auto); gap:6px 18px; justify-content:start"></div>
+        </div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px">
+          <button type="button" class="btn btn-primary" id="mfaStartBtn" hidden>Bật 2FA</button>
+          <button type="button" class="btn btn-outline" id="mfaNewBackupBtn" hidden>Tạo bộ mã dự phòng mới</button>
+          <button type="button" class="btn btn-outline" id="mfaDisableBtn" hidden>Tắt 2FA</button>
+        </div>
+        <div class="status-msg" id="mfaStatus" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel" style="margin-bottom:20px">
+        <h2>Cảnh báo qua Telegram</h2>
+        <p class="section-sub" id="tgState">Đang tải...</p>
+        <div style="display:flex; gap:10px; flex-wrap:wrap">
+          <button type="button" class="btn btn-primary" id="tgLinkBtn">Liên kết Telegram</button>
+          <button type="button" class="btn btn-outline" id="tgUnlinkBtn" hidden>Huỷ liên kết</button>
+        </div>
+        <div class="status-msg" id="tgStatus" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel" style="margin-bottom:20px">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap">
+          <h2 style="margin:0">Thiết bị đang đăng nhập</h2>
+          <button type="button" class="btn btn-outline" id="logoutAllBtn">Đăng xuất tất cả thiết bị</button>
+        </div>
+        <p class="section-sub">Tự động đăng xuất sau 30 phút không thao tác. Thấy thiết bị lạ? Bấm <em>Đăng xuất</em> rồi đổi mật khẩu ngay.</p>
+        <table id="sessionsTable">
+          <thead><tr><th>Thiết bị</th><th>IP</th><th>Đăng nhập lúc</th><th>Lần cuối dùng</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <h2 style="margin-top:22px; font-size:1rem">Lịch sử đăng nhập gần đây</h2>
+        <table id="loginHistoryTable">
+          <thead><tr><th>Thời gian</th><th>Thiết bị</th><th>IP</th><th>Trạng thái</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Đổi mật khẩu</h2>
+        <form id="pwForm" style="display:grid; grid-template-columns:1fr 1fr 140px auto; gap:10px; align-items:end">
+          <div class="field" style="margin-bottom:0">
+            <label for="pwCurrent">Mật khẩu hiện tại</label>
+            <input type="password" id="pwCurrent" autocomplete="current-password" required>
+          </div>
+          <div class="field" style="margin-bottom:0">
+            <label for="pwNew">Mật khẩu mới (≥ 8 ký tự)</label>
+            <input type="password" id="pwNew" autocomplete="new-password" minlength="8" required>
+          </div>
+          <div class="field" style="margin-bottom:0" id="pwCodeField" hidden>
+            <label for="pwCode">Mã 2FA</label>
+            <input type="text" id="pwCode" inputmode="numeric" maxlength="6">
+          </div>
+          <button type="submit" class="btn btn-primary">Đổi mật khẩu</button>
+        </form>
+        <p class="section-sub" style="margin-top:8px; font-size:0.8rem">Đổi mật khẩu sẽ đăng xuất mọi thiết bị khác.</p>
+        <div class="status-msg" id="pwStatus" role="status" aria-live="polite"></div>
+      </div>
+    </section>
+
+    <section id="section-security" style="display:none">
+      <div class="dash-main-header">
+        <h1>Bảo mật &amp; khẩn cấp</h1>
+      </div>
+      <p class="section-sub">
+        Trạng thái hệ thống, nhật ký bảo mật và các nút ứng phó sự cố. Các thao tác on-chain cần ví có quyền
+        <strong>Guardian</strong> (dừng, gắn cờ) hoặc <strong>Admin/multisig</strong> (mở lại, gỡ cờ).
+      </p>
+
+      <div class="panel" style="margin-bottom:20px">
+        <h2>Trạng thái hợp đồng</h2>
+        <p id="contractSecurityState" class="section-sub" style="margin:0">Đang tải...</p>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:14px">
+          <button type="button" class="btn btn-danger" id="pauseBtn">⏸ Dừng khẩn cấp (Guardian)</button>
+          <button type="button" class="btn btn-outline" id="unpauseBtn">▶ Mở lại hệ thống (Admin)</button>
+        </div>
+        <div class="status-msg" id="pauseStatus" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel" style="margin-bottom:20px">
+        <h2>Ví bị xâm phạm</h2>
+        <p class="section-sub">
+          Gắn cờ sẽ <strong>tước ngay quyền</strong> nhà sản xuất/phân phối/vận hành của ví, và mọi sản phẩm ví đó
+          mint hoặc chuyển giao <strong>từ thời điểm nghi lộ khoá</strong> sẽ hiện cảnh báo "đang kiểm tra" khi người tiêu dùng quét QR.
+          Sản phẩm trước thời điểm đó không bị ảnh hưởng.
+        </p>
+        <form id="flagForm" style="display:grid; grid-template-columns:1.6fr 1fr auto; gap:10px; align-items:end">
+          <div class="field" style="margin-bottom:0">
+            <label for="flagWallet">Địa chỉ ví bị hack</label>
+            <input type="text" id="flagWallet" placeholder="0x..." required>
+          </div>
+          <div class="field" style="margin-bottom:0">
+            <label for="flagSince">Nghi lộ khoá từ (để trống = bây giờ)</label>
+            <input type="datetime-local" id="flagSince">
+          </div>
+          <button type="submit" class="btn btn-danger">Gắn cờ</button>
+        </form>
+        <div style="display:flex; gap:10px; align-items:end; margin-top:12px">
+          <div class="field" style="margin-bottom:0; flex:1">
+            <label for="clearWallet">Gỡ cờ (sau khi điều tra là báo nhầm — cần Admin)</label>
+            <input type="text" id="clearWallet" placeholder="0x...">
+          </div>
+          <button type="button" class="btn btn-outline" id="clearFlagBtn">Gỡ cờ</button>
+        </div>
+        <div class="status-msg" id="flagStatus" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel" style="margin-bottom:20px">
+        <h2>Khôi phục quyền chủ sở hữu (mã cào)</h2>
+        <p class="section-sub">
+          Khách đã kích hoạt mã cào nhưng đổi điện thoại / xoá trình duyệt nên không còn được nhận là chủ. <strong>Gọi điện xác minh</strong>
+          (đối chiếu SĐT/email khách đăng ký khi kích hoạt) rồi tạo link khôi phục gửi cho khách. Link cũ của họ sẽ mất hiệu lực.
+        </p>
+        <form id="recoverForm" style="display:flex; gap:10px; align-items:end; flex-wrap:wrap">
+          <div class="field" style="margin-bottom:0; width:140px"><label for="recoverToken">Token ID</label><input type="number" id="recoverToken" min="0" required></div>
+          <button type="submit" class="btn btn-outline">Tạo link khôi phục</button>
+        </form>
+        <div class="status-msg" id="recoverStatus" role="status" aria-live="polite" style="word-break:break-all"></div>
+      </div>
+
+      <div class="panel" style="margin-bottom:20px">
+        <h2>Bẫy dữ liệu (đơn hàng canary)</h2>
+        <p class="section-sub">
+          Tạo đơn hàng giả trông như đơn thật, dùng <strong>số điện thoại do bạn giữ</strong> (sim phụ). Nếu có ai bấm <em>Xem đầy đủ</em>
+          đơn này trong hệ thống → báo động ngay. Nếu số điện thoại đó bị gọi/nhắn tin lạ → dữ liệu khách hàng đã bị lộ ra ngoài.
+          Lưu ý: đơn bẫy hiện trong danh sách đơn của nhà sản xuất sở hữu sản phẩm — hãy dặn trước người phụ trách thật là không xử lý đơn này.
+        </p>
+        <form id="canaryForm" style="display:grid; grid-template-columns:90px 1fr 1fr 1.6fr auto; gap:10px; align-items:end">
+          <div class="field" style="margin-bottom:0"><label for="cnToken">Token</label><input type="number" id="cnToken" min="0" required></div>
+          <div class="field" style="margin-bottom:0"><label for="cnName">Tên người mua</label><input type="text" id="cnName" required placeholder="Trần Thị Mai"></div>
+          <div class="field" style="margin-bottom:0"><label for="cnPhone">SĐT bẫy (bạn giữ)</label><input type="text" id="cnPhone" required placeholder="09xx..."></div>
+          <div class="field" style="margin-bottom:0"><label for="cnAddress">Địa chỉ</label><input type="text" id="cnAddress" required placeholder="25 Ngõ 12, Cầu Giấy, Hà Nội"></div>
+          <button type="submit" class="btn btn-outline">Tạo bẫy</button>
+        </form>
+        <div class="status-msg" id="canaryStatus" role="status" aria-live="polite"></div>
+        <table id="canaryTable" style="margin-top:12px">
+          <thead><tr><th>Token</th><th>Người mua (che)</th><th>Tạo lúc</th><th>Số lần bị mở</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap">
+          <h2 style="margin:0">Nhật ký bảo mật</h2>
+          <select id="auditFilter" style="width:auto">
+            <option value="warning">Chỉ cảnh báo &amp; nghiêm trọng</option>
+            <option value="all">Tất cả</option>
+            <option value="critical">Chỉ nghiêm trọng</option>
+          </select>
+        </div>
+        <table id="auditTable" style="margin-top:12px">
+          <thead><tr><th>Thời gian</th><th>Mức</th><th>Sự kiện</th><th>Tài khoản / Ví</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
 
   </main>
@@ -205,6 +402,12 @@
     <div class="qr-preview" id="qrPreview">
       <img id="qrImg" alt="QR code sản phẩm">
       <div class="tokenid" id="qrTokenId"></div>
+      <div id="claimCodeBox" hidden style="margin-top:14px; padding:14px; border-radius:12px; background:#fff4dc; color:#5c3d00; text-align:left">
+        <div style="font-size:0.8rem; font-weight:600">MÃ CÀO DÙNG 1 LẦN — in dưới lớp bạc cạnh mã QR</div>
+        <div class="mono" id="claimCodeValue" style="font-size:1.5rem; font-weight:700; letter-spacing:0.08em; margin:6px 0"></div>
+        <div style="font-size:0.78rem">⚠ Mã chỉ hiện <strong>một lần duy nhất</strong> — hệ thống không lưu mã gốc nên không xem lại được. In tem ngay; nếu lỡ mất, dùng "Cấp lại mã cào" ở thẻ sản phẩm (tem cũ sẽ vô hiệu).</div>
+        <button type="button" class="btn btn-primary" id="printLabelBtn" style="margin-top:10px; font-size:0.85rem">🖨 In tem (QR + mã cào)</button>
+      </div>
     </div>
   </div>
 </div>

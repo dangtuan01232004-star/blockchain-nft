@@ -3,6 +3,23 @@ if (!process.env.JWT_SECRET) {
   console.error("Thiếu JWT_SECRET — backend sẽ dừng để tránh dùng secret mặc định không an toàn.");
   process.exit(1);
 }
+// Chặn secret yếu / chuỗi mẫu trong .env.example: ai biết secret này đều
+// tự tạo được token admin giả mà không cần mật khẩu.
+{
+  const secret = process.env.JWT_SECRET;
+  const isProd = process.env.NODE_ENV === "production" || process.env.RENDER === "true";
+  const weak = secret.length < 32 || /doi-chuoi-nay|changeme|secret/i.test(secret);
+  if (weak && isProd) {
+    console.error(
+      "JWT_SECRET quá yếu hoặc vẫn là chuỗi mẫu — backend dừng lại. Tạo chuỗi mới bằng:\n" +
+        "  node -e \"console.log(require('crypto').randomBytes(48).toString('hex'))\"\n" +
+        "rồi đặt vào Render → Environment → JWT_SECRET."
+    );
+    process.exit(1);
+  } else if (weak) {
+    console.warn("⚠ JWT_SECRET đang yếu / là chuỗi mẫu — chỉ chấp nhận khi chạy local. Đổi trước khi deploy.");
+  }
+}
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -14,6 +31,10 @@ const contractRouter = require("./routes/contract");
 const partnersRouter = require("./routes/partners");
 const authRouter = require("./routes/auth");
 const shopRouter = require("./routes/shop");
+const telegramRouter = require("./routes/telegram");
+const mongoose = require("mongoose");
+const { getKey } = require("./services/crypto");
+const { runOrderPrivacyMaintenance } = require("./services/orderPrivacy");
 const { METADATA_DIR, PHOTOS_DIR } = require("./services/storage");
 const { QR_DIR } = require("./services/qrcode");
 const { resetCacheIfContractChanged } = require("./services/cacheReset");
@@ -22,7 +43,24 @@ const { connectDB } = require("./services/db");
 // Chạy NGAY lúc khởi động, trước khi mount route nào — đảm bảo cache
 // sản phẩm/đối tác không bao giờ lẫn dữ liệu của một contract đã deploy lại.
 resetCacheIfContractChanged();
+
+// Khoá mã hoá dữ liệu cá nhân phải có trước khi nhận đơn hàng nào
+try {
+  getKey();
+} catch (err) {
+  console.error(err.message + "\nTạo khoá: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"");
+  process.exit(1);
+}
+
 connectDB();
+
+// Bảo vệ dữ liệu đơn hàng: mã hoá đơn cũ + xoá thông tin quá hạn — chạy khi
+// kết nối DB xong và mỗi 6 giờ (Render Free ngủ thì monitor.js chạy bù)
+mongoose.connection.once("open", () => {
+  const run = () => runOrderPrivacyMaintenance().catch((err) => console.error("Lỗi bảo trì dữ liệu đơn hàng:", err.message));
+  run();
+  setInterval(run, 6 * 60 * 60 * 1000).unref();
+});
 
 const app = express();
 app.set("trust proxy", 1);
@@ -37,11 +75,26 @@ const allowedOrigins = new Set(
     .filter(Boolean)
 );
 if (allowedOrigins.size === 0) {
-  console.warn("FRONTEND_ORIGIN chưa được cấu hình; trình duyệt cross-origin sẽ không được CORS cho phép.");
+  console.warn(
+    process.env.NODE_ENV === "production"
+      ? "FRONTEND_ORIGIN chưa được cấu hình; trình duyệt cross-origin sẽ không được CORS cho phép."
+      : "FRONTEND_ORIGIN chưa được cấu hình; chỉ origin localhost mới được CORS cho phép trong môi trường phát triển."
+  );
 }
 app.use(cors({
   origin(origin, callback) {
-    callback(null, !origin || allowedOrigins.has(origin));
+    let isLocalDevelopmentOrigin = false;
+    if (allowedOrigins.size === 0 && process.env.NODE_ENV !== "production" && origin) {
+      try {
+        const url = new URL(origin);
+        isLocalDevelopmentOrigin =
+          url.protocol === "http:" &&
+          ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+      } catch {
+        isLocalDevelopmentOrigin = false;
+      }
+    }
+    callback(null, !origin || allowedOrigins.has(origin) || isLocalDevelopmentOrigin);
   },
 }));
 
@@ -67,7 +120,26 @@ const orderLimiter = rateLimit({
   message: { error: "Quá nhiều yêu cầu đặt hàng. Vui lòng thử lại sau." },
 });
 
-app.use("/api/auth/login", loginLimiter);
+const walletLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Quá nhiều yêu cầu liên kết ví. Vui lòng thử lại sau." },
+});
+
+const accountLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 15,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Quá nhiều yêu cầu. Vui lòng thử lại sau." },
+});
+
+app.use("/api/auth/login", loginLimiter); // gồm cả /login/2fa
+app.use("/api/auth/me/password", accountLimiter);
+app.use("/api/auth/me/2fa", accountLimiter);
+app.use("/api/auth/me/wallet", walletLimiter);
 app.use("/api/auth/register", registerLimiter);
 app.post("/api/shop/orders", orderLimiter);
 app.use(express.json({ limit: "5mb" }));
@@ -91,6 +163,7 @@ app.use("/api/contract", contractRouter);
 app.use("/api/partners", partnersRouter);
 app.use("/api/auth", authRouter);
 app.use("/api/shop", shopRouter);
+app.use("/api/telegram", telegramRouter);
 
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 

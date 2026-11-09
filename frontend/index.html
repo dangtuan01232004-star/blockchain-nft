@@ -3,56 +3,60 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NFTTrace — Nền tảng định danh, xác thực và truy xuất nguồn gốc bằng Blockchain</title>
+<title>NFTTrace — Nền tảng định danh, xác thực và truy xuất nguồn gốc sản phẩm</title>
 <link rel="stylesheet" href="css/styles.css">
 <script src="js/config.js"></script>
-<script>
-  const productTokenId = new URLSearchParams(window.location.search).get("tokenId");
-  if (productTokenId !== null && productTokenId.trim()) {
-    const verifyUrl = new URL("/verify.html", window.location.origin);
-    verifyUrl.searchParams.set("tokenId", productTokenId);
-    window.location.replace(verifyUrl.href);
-  }
-</script>
+<script src="js/i18n.js"></script>
 </head>
 <body class="app-theme">
 
 <div class="topbar">
-  <div class="wrap topbar-layout">
-    <nav class="nav-group nav-left">
-      <a href="index.html" class="active">Trang chủ</a>
-      <a href="#linh-vuc">Lĩnh vực</a>
-      <a href="#loi-ich">Lợi ích</a>
-      <a href="#tinh-nang">Tính năng</a>
-    </nav>
-
-    <div class="brand-center">
-      <a href="index.html" class="brand">
-        <img src="assets/nfttrace-logo.jpg" alt="NFTTrace" class="brand-logo-img">
-      </a>
+  <div class="wrap topbar-inner">
+    <div class="nav-links nav-links-left">
+      <a href="index.html" class="nav-active" data-i18n="nav_home">Trang chủ</a>
+      <a href="#pillars" data-i18n="nav_sectors">Lĩnh vực</a>
+      <a href="#pillars" data-i18n="nav_benefits">Lợi ích</a>
+      <a href="#tech" data-i18n="nav_features">Tính năng</a>
     </div>
-
-    <nav class="nav-group nav-right">
-      <a href="#tech">Công nghệ</a>
-      <a href="verify.html">Xác thực</a>
-      <a href="shop.html">Mua hàng</a>
-      <a href="admin.html">Quản trị</a>
+    <a href="index.html" class="brand">
+      <svg class="brand-icon" width="36" height="41" viewBox="0 0 43 49" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M0 14.2137V21.7055L13.8476 30.2958C15.3244 31.212 17.2556 30.8564 18.3092 29.4742L34.7655 7.88643L24.4934 1.95507C22.3993 0.745853 19.8182 0.74972 17.7277 1.96521L1.67797 11.297C0.639148 11.901 0 13.012 0 14.2137Z" fill="url(#p0_logo_idx)"/>
+        <path d="M38.9344 10.3617L38.6455 10.2061L21.1375 32.7896C19.0079 35.5365 15.1401 36.2163 12.2015 34.3602L0 26.6536V32.8455C0 35.2488 1.27829 37.4707 3.35594 38.6787L17.6919 47.0141C19.8015 48.2407 22.409 48.2327 24.511 46.9931L39.1614 38.3536C41.2188 37.1403 42.4815 34.9298 42.4815 32.5414V16.3019C42.4815 13.8202 41.1192 11.5388 38.9344 10.3617Z" fill="url(#p1_logo_idx)"/>
+        <defs>
+          <linearGradient id="p0_logo_idx" x1="33.679" y1="16.1102" x2="0" y2="16.1102" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#03C2EA"/>
+            <stop offset="1" stop-color="#40E7D9"/>
+          </linearGradient>
+          <linearGradient id="p1_logo_idx" x1="42.4815" y1="29.2446" x2="0" y2="29.2446" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#049CFF"/>
+            <stop offset="1" stop-color="#2A2FFF"/>
+          </linearGradient>
+        </defs>
+      </svg>
+      <span class="brand-text"><span class="brand-nda">NFT</span>Trace</span>
+    </a>
+    <div class="nav-links nav-links-right">
+      <a href="#tech" data-i18n="nav_tech">Công nghệ</a>
+      <a href="verify.html" data-i18n="nav_verify">Xác thực</a>
+      <a href="login.html" data-i18n="nav_login">Đăng nhập</a>
       <div class="lang-switch">
-        <span class="lang-btn active">Vie</span>
-        <span class="lang-btn">Eng</span>
+        <span class="lang-opt active" data-lang="vi">Vie</span>
+        <span class="lang-opt" data-lang="en">Eng</span>
       </div>
-    </nav>
+    </div>
   </div>
 </div>
 
-<section class="hero hero-center" id="tinh-nang">
+<section class="hero hero-center">
   <div class="wrap">
-    <h1>Nền tảng định danh, xác thực và truy xuất<br>nguồn gốc sản phẩm, hàng hóa</h1>
-    <p class="lede">
-      NFTTrace là giải pháp truy xuất nguồn gốc toàn diện, giúp theo dõi minh bạch toàn bộ hành trình sản phẩm trong chuỗi cung ứng, từ sản xuất đến tay người tiêu dùng.
+    <h1 class="hero-heading-italic" data-i18n="hero_title" data-i18n-html="true">Nền tảng định danh, xác thực và truy xuất<br>nguồn gốc sản phẩm, hàng hóa</h1>
+    <p class="lede" data-i18n="hero_desc">
+      NFTTrace là giải pháp truy xuất nguồn gốc toàn diện, giúp theo dõi minh bạch toàn bộ hành trình
+      sản phẩm trong chuỗi cung ứng, từ sản xuất đến tay người tiêu dùng.
     </p>
     <div class="cta-row cta-row-center">
-      <a href="verify.html" class="btn btn-primary">Quét mã xác thực sản phẩm</a>
+      <a href="verify.html" class="btn btn-primary" data-i18n="hero_btn_verify">Xác thực</a>
+      <a href="#stats" class="btn btn-outline" data-i18n="hero_btn_stats">Xem thống kê</a>
     </div>
   </div>
 
@@ -60,52 +64,52 @@
     <div class="wrap">
       <img src="assets/quy-trinh-cung-ung.webp" alt="Sơ đồ quy trình: Sản xuất → Kiểm định → Xuất kho → Phân phối → Tiêu thụ" class="flow-image">
       <div class="flow-phone">
-        <span class="seal-mini">✓</span> Quét QR xác thực tại mỗi bước
+        <span class="seal-mini">✓</span> <span data-i18n="flow_phone">Quét QR xác thực tại mỗi bước</span>
       </div>
     </div>
   </div>
 </section>
 
-<section class="stats" id="loi-ich">
+<section class="stats" id="stats">
   <div class="wrap stats-row">
     <div class="stat-item">
       <span class="stat-num" id="statProducts">—</span>
-      <span class="stat-label">Sản phẩm đã phát hành NFT</span>
+      <span class="stat-label" data-i18n="stat_products">Sản phẩm đã phát hành NFT</span>
     </div>
     <div class="stat-item">
       <span class="stat-num" id="statPartners">—</span>
-      <span class="stat-label">Đối tác trong chuỗi cung ứng</span>
+      <span class="stat-label" data-i18n="stat_partners">Đối tác trong chuỗi cung ứng</span>
     </div>
     <div class="stat-item">
       <span class="stat-num">ERC-721</span>
-      <span class="stat-label">Tiêu chuẩn NFT sử dụng</span>
+      <span class="stat-label" data-i18n="stat_standard">Tiêu chuẩn NFT sử dụng</span>
     </div>
     <div class="stat-item">
       <span class="stat-num">100%</span>
-      <span class="stat-label">Giao dịch ký trực tiếp bằng ví người dùng</span>
+      <span class="stat-label" data-i18n="stat_signed">Giao dịch ký trực tiếp bằng ví người dùng</span>
     </div>
   </div>
 </section>
 
-<section class="pillars" id="linh-vuc">
+<section class="pillars" id="pillars">
   <div class="wrap">
-    <h2 class="section-title">Ba trụ cột của hệ thống</h2>
-    <p class="section-sub">Định danh, xác thực và truy xuất — mỗi trụ cột ứng với một thành phần kỹ thuật cụ thể.</p>
+    <h2 class="section-title" data-i18n="pillars_title">Ba trụ cột của hệ thống</h2>
+    <p class="section-sub" data-i18n="pillars_sub">Định danh, xác thực và truy xuất — mỗi trụ cột ứng với một thành phần kỹ thuật cụ thể.</p>
     <div class="pillar-grid">
       <div class="pillar-card">
-        <span class="pillar-tag">Định danh</span>
-        <h3>Mint NFT cho từng sản phẩm</h3>
-        <p>Nhà sản xuất phát hành NFT chuẩn ERC-721 duy nhất cho mỗi sản phẩm, metadata lưu trên IPFS, gắn mã QR vật lý lên bao bì.</p>
+        <span class="pillar-tag" data-i18n="pillar_tag1">Định danh</span>
+        <h3 data-i18n="pillar_h1">Mint NFT cho từng sản phẩm</h3>
+        <p data-i18n="pillar_p1">Nhà sản xuất phát hành NFT chuẩn ERC-721 duy nhất cho mỗi sản phẩm, metadata lưu trên IPFS, gắn mã QR vật lý lên bao bì.</p>
       </div>
       <div class="pillar-card">
-        <span class="pillar-tag">Xác thực</span>
-        <h3>Smart contract trên Ethereum</h3>
-        <p>Mọi giao dịch (mint, chuyển giao) được ký trực tiếp bằng ví MetaMask của từng vai trò — không máy chủ trung gian nào có thể chỉnh sửa dữ liệu.</p>
+        <span class="pillar-tag" data-i18n="pillar_tag2">Xác thực</span>
+        <h3 data-i18n="pillar_h2">Smart contract trên Ethereum</h3>
+        <p data-i18n="pillar_p2">Mọi giao dịch (mint, chuyển giao) được ký trực tiếp bằng ví MetaMask của từng vai trò — không máy chủ trung gian nào có thể chỉnh sửa dữ liệu.</p>
       </div>
       <div class="pillar-card">
-        <span class="pillar-tag">Truy xuất</span>
-        <h3>Trang tra cứu công khai</h3>
-        <p>Người tiêu dùng quét QR, xem toàn bộ lịch sử chuỗi cung ứng theo thời gian thực — không cần cài ví, không tốn phí gas.</p>
+        <span class="pillar-tag" data-i18n="pillar_tag3">Truy xuất</span>
+        <h3 data-i18n="pillar_h3">Trang tra cứu công khai</h3>
+        <p data-i18n="pillar_p3">Người tiêu dùng quét QR, xem toàn bộ lịch sử chuỗi cung ứng theo thời gian thực — không cần cài ví, không tốn phí gas.</p>
       </div>
     </div>
   </div>
@@ -113,27 +117,27 @@
 
 <section class="tech" id="tech">
   <div class="wrap">
-    <h2 class="section-title">Công nghệ sử dụng</h2>
-    <p class="section-sub">Kiến trúc phi tập trung ở mọi lớp — không có điểm nào một mình backend có thể thao túng dữ liệu.</p>
+    <h2 class="section-title" data-i18n="tech_title">Công nghệ sử dụng</h2>
+    <p class="section-sub" data-i18n="tech_sub">Kiến trúc phi tập trung ở mọi lớp — không có điểm nào một mình backend có thể thao túng dữ liệu.</p>
     <div class="tech-grid">
       <div class="tech-item">
-        <h3>Nền tảng chuỗi khối</h3>
-        <p>Hợp đồng thông minh Solidity (ERC-721 + AccessControl của OpenZeppelin) triển khai trên Ethereum, đảm bảo dữ liệu minh bạch, bất biến.</p>
+        <h3 data-i18n="tech_h1">Nền tảng chuỗi khối</h3>
+        <p data-i18n="tech_p1">Hợp đồng thông minh Solidity (ERC-721 + AccessControl của OpenZeppelin) triển khai trên Ethereum, đảm bảo dữ liệu minh bạch, bất biến.</p>
       </div>
       <div class="tech-item">
-        <h3>Lưu trữ phi tập trung IPFS</h3>
-        <p>Metadata sản phẩm (tên, mô tả, ảnh) được ghim lên IPFS qua Pinata, không phụ thuộc vào một máy chủ trung tâm duy nhất.</p>
+        <h3 data-i18n="tech_h2">Lưu trữ phi tập trung IPFS</h3>
+        <p data-i18n="tech_p2">Metadata sản phẩm (tên, mô tả, ảnh) được ghim lên IPFS qua Pinata, không phụ thuộc vào một máy chủ trung tâm duy nhất.</p>
       </div>
       <div class="tech-item">
-        <h3>Ký giao dịch phi tập trung</h3>
-        <p>Mỗi vai trò tự kết nối ví MetaMask và tự ký giao dịch của mình — backend không lưu giữ private key của bất kỳ ai.</p>
+        <h3 data-i18n="tech_h3">Ký giao dịch phi tập trung</h3>
+        <p data-i18n="tech_p3">Mỗi vai trò tự kết nối ví MetaMask và tự ký giao dịch của mình — backend không lưu giữ private key của bất kỳ ai.</p>
       </div>
     </div>
   </div>
 </section>
 
 <footer>
-  <div class="wrap">
+  <div class="wrap" data-i18n="footer_text">
     Đồ án tốt nghiệp — Nghiên cứu triển khai giải pháp Blockchain kết hợp NFT chống hàng giả và truy xuất nguồn gốc trong TMĐT.
   </div>
 </footer>
@@ -141,12 +145,9 @@
 <script>
   const API_BASE = window.API_BASE || `http://${window.location.hostname}:4000`;
   fetch(`${API_BASE}/api/products`)
-    .then((r) => {
-      if (!r.ok) throw new Error("Không tải được danh sách sản phẩm");
-      return r.json();
-    })
+    .then((r) => r.json())
     .then((list) => { document.getElementById("statProducts").textContent = list.length; })
-    .catch(() => { document.getElementById("statProducts").textContent = "—"; });
+    .catch(() => { document.getElementById("statProducts").textContent = "0"; });
   fetch(`${API_BASE}/api/partners`)
     .then((r) => r.json())
     .then((list) => { document.getElementById("statPartners").textContent = list.length; })

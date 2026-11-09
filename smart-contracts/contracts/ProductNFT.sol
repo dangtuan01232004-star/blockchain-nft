@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 
 /**
  * @title ProductNFT
@@ -11,19 +12,32 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
  *         (custody history) và cho phép xác thực hàng chính hãng thông qua
  *         mã QR gắn trên sản phẩm.
  *
- * Các tác nhân trong hệ thống:
- *  - ADMIN_ROLE         : quản trị hệ thống, cấp/thu hồi vai trò
- *  - MANUFACTURER_ROLE   : nhà sản xuất, được phép mint sản phẩm mới
- *  - DISTRIBUTOR_ROLE    : đơn vị phân phối/vận chuyển, được phép cập nhật
- *                          bước chuyển giao trong chuỗi cung ứng
- *  - Người tiêu dùng     : không cần vai trò đặc biệt, chỉ đọc dữ liệu qua
- *                          hàm verifyProduct (view, miễn phí gas)
+ * MÔ HÌNH PHÂN QUYỀN NHIỀU TẦNG (để mất 1 khoá không mất cả hệ thống):
+ *  - DEFAULT_ADMIN_ROLE : quyền cao nhất — NÊN là ví đa chữ ký (Safe multisig).
+ *                          Cấp/thu hồi OPERATOR, GUARDIAN; mở lại hệ thống
+ *                          sau sự cố (unpause); gỡ cờ "ví bị xâm phạm".
+ *  - OPERATOR_ROLE      : vận hành hằng ngày — cấp/thu hồi quyền nhà sản xuất
+ *                          và phân phối (duyệt đối tác). KHÔNG cấp được quyền
+ *                          admin/guardian cho ai → không leo thang được.
+ *  - GUARDIAN_ROLE      : phản ứng khẩn cấp — dừng hệ thống (pause), đánh dấu
+ *                          ví bị hack (flagCompromised), thu hồi xác thực sản
+ *                          phẩm. KHÔNG cấp được quyền cho ai, KHÔNG mở lại được
+ *                          hệ thống → guardian bị hack cũng chỉ gây gián đoạn.
+ *  - MANUFACTURER_ROLE  : nhà sản xuất, được phép mint sản phẩm mới
+ *  - DISTRIBUTOR_ROLE   : đơn vị phân phối/vận chuyển
+ *  - Người tiêu dùng    : không cần vai trò, chỉ đọc qua verifyProduct /
+ *                          securityStatus (view, miễn phí gas)
  */
-contract ProductNFT is ERC721URIStorage, AccessControl {
+contract ProductNFT is ERC721URIStorage, AccessControl, Pausable {
     bytes32 public constant MANUFACTURER_ROLE = keccak256("MANUFACTURER_ROLE");
     bytes32 public constant DISTRIBUTOR_ROLE = keccak256("DISTRIBUTOR_ROLE");
+    bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
+    bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
 
     uint256 private _nextTokenId;
+
+    /// @dev Cờ nội bộ: chỉ cho phép chuyển NFT khi đang đi qua transferCustody()
+    bool private _inCustodyTransfer;
 
     /// @notice Một bước trong chuỗi cung ứng của sản phẩm
     struct CustodyRecord {
@@ -33,10 +47,10 @@ contract ProductNFT is ERC721URIStorage, AccessControl {
         string action;      // Hành động: "MINTED", "SHIPPED", "RECEIVED", "SOLD", ...
         uint256 timestamp;  // Thời gian ghi nhận (block timestamp)
         string photoURI;    // Ảnh chụp tại bước này (link IPFS, "" nếu không có)
-        string gpsCoords;   // Toạ độ GPS lúc ghi nhận, dạng "vĩ độ,kinh độ" (ví dụ "10.762622,106.660172"), "" nếu không có
+        string gpsCoords;   // Toạ độ GPS lúc ghi nhận, dạng "vĩ độ,kinh độ", "" nếu không có
     }
 
-    /// @notice Trạng thái xác thực — cho phép Admin thu hồi (revoke) nếu phát hiện gian lận
+    /// @notice Trạng thái xác thực — cho phép thu hồi (revoke) nếu phát hiện gian lận
     mapping(uint256 => bool) public isRevoked;
 
     /// @notice Lịch sử chuỗi cung ứng theo từng tokenId
@@ -45,14 +59,40 @@ contract ProductNFT is ERC721URIStorage, AccessControl {
     /// @notice Mã lô sản xuất / SKU gắn với từng tokenId, dùng để đối chiếu QR
     mapping(uint256 => string) public productCode;
 
+    /// @notice Ví đã ký mint token này — dùng để khoanh vùng khi ví đó bị hack
+    mapping(uint256 => address) public mintedBy;
+
+    /**
+     * @notice Thời điểm (unix, giây) mà một ví bị nghi đã bị xâm phạm.
+     *         0 = ví bình thường. Mọi thao tác ví này ký TỪ thời điểm đó trở
+     *         đi đều bị coi là nghi vấn (không xoá dữ liệu, chỉ gắn cờ).
+     */
+    mapping(address => uint256) public compromisedSince;
+
     event ProductMinted(uint256 indexed tokenId, address indexed manufacturer, string productCode, string tokenURI);
     event CustodyTransferred(uint256 indexed tokenId, address indexed from, address indexed to, string action, string location);
     event ProductRevoked(uint256 indexed tokenId, string reason);
+    event WalletCompromised(address indexed wallet, uint256 since, address indexed flaggedBy);
+    event WalletCleared(address indexed wallet, address indexed clearedBy);
 
     constructor() ERC721("ProductTraceabilityNFT", "PTNFT") {
+        // Ví deploy nhận tạm cả 3 quyền quản trị để cấu hình ban đầu. Khi
+        // triển khai thật, scripts/deploy.js sẽ chuyển DEFAULT_ADMIN_ROLE
+        // sang ví multisig rồi tự từ bỏ quyền của ví deploy.
+        // Ví deploy KHÔNG còn quyền mint (tách quyền quản trị khỏi sản xuất).
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _grantRole(MANUFACTURER_ROLE, msg.sender);
+        _grantRole(OPERATOR_ROLE, msg.sender);
+        _grantRole(GUARDIAN_ROLE, msg.sender);
+
+        // Quyền nhà sản xuất / phân phối do OPERATOR quản lý, không cần
+        // multisig cho việc duyệt đối tác hằng ngày.
+        _setRoleAdmin(MANUFACTURER_ROLE, OPERATOR_ROLE);
+        _setRoleAdmin(DISTRIBUTOR_ROLE, OPERATOR_ROLE);
     }
+
+    // ------------------------------------------------------------------
+    // Nghiệp vụ chính
+    // ------------------------------------------------------------------
 
     /**
      * @notice Nhà sản xuất phát hành NFT cho một sản phẩm thực.
@@ -68,13 +108,14 @@ contract ProductNFT is ERC721URIStorage, AccessControl {
         string memory productCode_,
         string memory photoURI_,
         string memory gpsCoords_
-    ) external onlyRole(MANUFACTURER_ROLE) returns (uint256) {
+    ) external onlyRole(MANUFACTURER_ROLE) whenNotPaused returns (uint256) {
         uint256 tokenId = _nextTokenId;
         _nextTokenId++;
 
         _safeMint(to, tokenId);
         _setTokenURI(tokenId, tokenURI_);
         productCode[tokenId] = productCode_;
+        mintedBy[tokenId] = msg.sender;
 
         _history[tokenId].push(
             CustodyRecord({
@@ -94,8 +135,9 @@ contract ProductNFT is ERC721URIStorage, AccessControl {
 
     /**
      * @notice Chuyển giao quyền sở hữu / cập nhật một bước trong chuỗi cung ứng.
-     *         Chỉ chủ sở hữu hiện tại của token hoặc tài khoản có DISTRIBUTOR_ROLE
-     *         mới được gọi hàm này.
+     *         CHỈ chủ sở hữu hiện tại của token mới được gọi. (Bản cũ cho mọi
+     *         ví có DISTRIBUTOR_ROLE chuyển BẤT KỲ token nào — một ví phân phối
+     *         bị hack sẽ chiếm được toàn bộ sản phẩm. Nay đã chặn.)
      * @param photoURI Ảnh chụp tại bước này (link IPFS), có thể để rỗng ""
      * @param gpsCoords Toạ độ GPS lúc ghi nhận, dạng "vĩ độ,kinh độ", có thể để rỗng ""
      */
@@ -107,16 +149,16 @@ contract ProductNFT is ERC721URIStorage, AccessControl {
         string memory action,
         string memory photoURI,
         string memory gpsCoords
-    ) external {
+    ) external whenNotPaused {
         require(_ownerOf(tokenId) != address(0), "Token khong ton tai");
         require(!isRevoked[tokenId], "San pham da bi thu hoi xac thuc");
-        require(
-            ownerOf(tokenId) == msg.sender || hasRole(DISTRIBUTOR_ROLE, msg.sender),
-            "Khong co quyen chuyen giao"
-        );
+        require(ownerOf(tokenId) == msg.sender, "Khong co quyen chuyen giao");
+        require(newHolder != address(0), "Nguoi nhan khong hop le");
 
-        address previousOwner = ownerOf(tokenId);
+        address previousOwner = msg.sender;
+        _inCustodyTransfer = true;
         _transfer(previousOwner, newHolder, tokenId);
+        _inCustodyTransfer = false;
 
         _history[tokenId].push(
             CustodyRecord({
@@ -133,12 +175,77 @@ contract ProductNFT is ERC721URIStorage, AccessControl {
         emit CustodyTransferred(tokenId, previousOwner, newHolder, action, location);
     }
 
-    /// @notice Admin có thể thu hồi xác thực nếu phát hiện gian lận / báo cáo hàng giả
-    function revokeAuthenticity(uint256 tokenId, string memory reason) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    /**
+     * @notice Thu hồi xác thực 1 sản phẩm khi phát hiện gian lận. Guardian
+     *         làm được (phản ứng nhanh), admin (multisig) cũng làm được.
+     *         Vẫn hoạt động khi hệ thống đang tạm dừng.
+     */
+    function revokeAuthenticity(uint256 tokenId, string memory reason) external {
+        require(
+            hasRole(GUARDIAN_ROLE, msg.sender) || hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
+            "Khong co quyen thu hoi"
+        );
         require(_ownerOf(tokenId) != address(0), "Token khong ton tai");
         isRevoked[tokenId] = true;
         emit ProductRevoked(tokenId, reason);
     }
+
+    // ------------------------------------------------------------------
+    // Ứng phó sự cố
+    // ------------------------------------------------------------------
+
+    /// @notice Dừng khẩn cấp mọi thao tác mint / chuyển giao (Guardian)
+    function pause() external onlyRole(GUARDIAN_ROLE) {
+        _pause();
+    }
+
+    /// @notice Mở lại hệ thống sau khi xử lý xong sự cố — chỉ admin (multisig)
+    function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) {
+        _unpause();
+    }
+
+    /**
+     * @notice Đánh dấu một ví đã bị xâm phạm: tước ngay quyền nhà sản xuất /
+     *         phân phối / vận hành của ví đó, và gắn cờ nghi vấn cho MỌI sản
+     *         phẩm mà ví này mint hoặc chuyển giao từ thời điểm `since`.
+     *         Chỉ 1 giao dịch, không cần thu hồi từng token.
+     * @param wallet Ví bị nghi bị hack
+     * @param since  Thời điểm nghi bị lộ khoá (unix giây). Truyền 0 = "ngay bây giờ".
+     */
+    function flagCompromised(address wallet, uint256 since) external onlyRole(GUARDIAN_ROLE) {
+        require(wallet != address(0), "Vi khong hop le");
+        require(!hasRole(DEFAULT_ADMIN_ROLE, wallet), "Khong the gan co admin");
+        if (since == 0) since = block.timestamp;
+        require(since <= block.timestamp, "Thoi diem trong tuong lai");
+
+        // Ví đã bị gắn cờ trước đó: chỉ cho phép lùi mốc về sớm hơn (mở rộng
+        // vùng nghi vấn), không cho đẩy mốc về sau (thu hẹp, che giấu).
+        uint256 current = compromisedSince[wallet];
+        if (current == 0 || since < current) {
+            compromisedSince[wallet] = since;
+        }
+
+        _revokeRole(MANUFACTURER_ROLE, wallet);
+        _revokeRole(DISTRIBUTOR_ROLE, wallet);
+        _revokeRole(OPERATOR_ROLE, wallet);
+
+        emit WalletCompromised(wallet, compromisedSince[wallet], msg.sender);
+    }
+
+    /**
+     * @notice Gỡ cờ sau khi đã điều tra và kết luận ví không bị hack (báo
+     *         nhầm). Chỉ admin (multisig). KHÔNG tự cấp lại quyền — nếu cần,
+     *         operator phải cấp lại như một đối tác mới.
+     */
+    function clearCompromised(address wallet) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(compromisedSince[wallet] != 0, "Vi chua bi gan co");
+        compromisedSince[wallet] = 0;
+        emit WalletCleared(wallet, msg.sender);
+    }
+
+    // ------------------------------------------------------------------
+    // Đọc dữ liệu
+    // ------------------------------------------------------------------
 
     /// @notice Trả về toàn bộ lịch sử chuỗi cung ứng của một sản phẩm
     function getHistory(uint256 tokenId) external view returns (CustodyRecord[] memory) {
@@ -148,6 +255,7 @@ contract ProductNFT is ERC721URIStorage, AccessControl {
 
     /**
      * @notice Hàm xác thực chính — được backend gọi khi người dùng quét mã QR.
+     *         (Giữ nguyên chữ ký hàm cũ để không phá vỡ backend.)
      * @return owner Chủ sở hữu hiện tại của NFT
      * @return uri Metadata URI (IPFS) của sản phẩm
      * @return code Mã sản phẩm / SKU
@@ -175,8 +283,54 @@ contract ProductNFT is ERC721URIStorage, AccessControl {
         );
     }
 
+    /**
+     * @notice Kiểm tra sản phẩm có dính tới ví bị xâm phạm không.
+     * @return suspect     true nếu có ít nhất 1 bước (mint hoặc chuyển giao)
+     *                     do ví bị gắn cờ ký, tại/sau thời điểm bị lộ
+     * @return actor       Ví bị gắn cờ đầu tiên tìm thấy (address(0) nếu không có)
+     * @return since       Thời điểm ví đó bị nghi lộ khoá
+     * @return stepIndex   Vị trí bước nghi vấn trong lịch sử
+     */
+    function securityStatus(uint256 tokenId)
+        external
+        view
+        returns (bool suspect, address actor, uint256 since, uint256 stepIndex)
+    {
+        require(_ownerOf(tokenId) != address(0), "Token khong ton tai");
+        CustodyRecord[] storage h = _history[tokenId];
+        for (uint256 i = 0; i < h.length; i++) {
+            uint256 s = compromisedSince[h[i].actor];
+            if (s != 0 && h[i].timestamp >= s) {
+                return (true, h[i].actor, s, i);
+            }
+        }
+        return (false, address(0), 0, 0);
+    }
+
     function totalMinted() external view returns (uint256) {
         return _nextTokenId;
+    }
+
+    // ------------------------------------------------------------------
+    // Override nội bộ
+    // ------------------------------------------------------------------
+
+    /**
+     * @dev Chặn mọi đường chuyển NFT khác ngoài transferCustody() (ví dụ
+     *      transferFrom/safeTransferFrom chuẩn ERC-721). Nếu không chặn, chủ
+     *      sở hữu có thể chuyển token mà KHÔNG để lại dấu vết trong lịch sử
+     *      chuỗi cung ứng, và lách được kiểm tra thu hồi / tạm dừng.
+     */
+    function _update(address to, uint256 tokenId, address auth)
+        internal
+        override
+        returns (address)
+    {
+        address from = _ownerOf(tokenId);
+        if (from != address(0)) {
+            require(_inCustodyTransfer, "Chi chuyen giao qua transferCustody");
+        }
+        return super._update(to, tokenId, auth);
     }
 
     // --- Bắt buộc override do đa kế thừa ERC721URIStorage + AccessControl ---

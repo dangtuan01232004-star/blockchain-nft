@@ -1,35 +1,142 @@
 const express = require("express");
+const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const { ethers } = require("ethers");
 const User = require("../models/User");
+const AuditLog = require("../models/AuditLog");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
+const { securityEvent } = require("../services/alerts");
+const { getReadOnlyContract } = require("../services/blockchain");
+const Session = require("../models/Session");
+const {
+  startSession,
+  revokeSession,
+  revokeAllSessions,
+  reportNotMe,
+  shortUA,
+} = require("../services/sessions");
+const {
+  encrypt,
+  decrypt,
+  generateTotpSecret,
+  verifyTotp,
+  totpUri,
+  generateBackupCodes,
+  hashBackupCode,
+} = require("../services/crypto");
+const QRCode = require("qrcode");
 
 const router = express.Router();
 
-function signToken(user) {
-  return jwt.sign(
-    { id: user._id, username: user.username, role: user.role },
-    process.env.JWT_SECRET,
-    { expiresIn: "1d" }
-  );
+const MAX_FAILED_LOGINS = Number(process.env.MAX_FAILED_LOGINS || 5);
+const LOCK_MINUTES = Number(process.env.LOGIN_LOCK_MINUTES || 15);
+const NONCE_TTL_MS = 5 * 60 * 1000;
+
+// Không bao giờ trả các trường này ra ngoài
+const PRIVATE_FIELDS =
+  "-passwordHash -walletNonce -walletNonceFor -walletNonceExpires -tokenVersion -knownIps " +
+  "-twoFactorSecret -twoFactorPendingSecret -twoFactorLastStep -backupCodeHashes " +
+  "-telegramChatId -telegramLinkCode -telegramLinkExpires";
+
+// Vai trò tài khoản → vai trò on-chain cần có trước khi được coi là "đã duyệt"
+const USER_ROLE_TO_CONTRACT_ROLE = { manufacturer: "MANUFACTURER_ROLE", distributor: "DISTRIBUTOR_ROLE" };
+
+// Băm giả để so sánh khi username không tồn tại — giữ thời gian phản hồi
+// như nhau, không lộ "username này có tồn tại hay không"
+const DUMMY_HASH = bcrypt.hashSync("dummy-password-for-timing", 10);
+
+/** Token tạm (5 phút) giữa bước mật khẩu và bước nhập mã 2FA — không dùng để gọi API */
+function signMfaToken(user) {
+  return jwt.sign({ id: String(user._id), typ: "mfa", tv: user.tokenVersion || 0 }, process.env.JWT_SECRET, {
+    expiresIn: "5m",
+    algorithm: "HS256",
+  });
+}
+
+function publicUser(user) {
+  return {
+    id: user._id,
+    username: user.username,
+    displayName: user.displayName,
+    role: user.role,
+    twoFactorEnabled: Boolean(user.twoFactorEnabled),
+  };
+}
+
+/** Ghi nhận sai mật khẩu / sai mã 2FA — đủ ngưỡng thì khoá tạm tài khoản */
+async function registerFailure(user, req, what) {
+  user.failedLogins = (user.failedLogins || 0) + 1;
+  if (user.failedLogins >= MAX_FAILED_LOGINS) {
+    user.lockUntil = new Date(Date.now() + LOCK_MINUTES * 60000);
+    user.failedLogins = 0;
+    await user.save();
+    await securityEvent({
+      type: "account_locked",
+      severity: user.role === "admin" ? "critical" : "warning",
+      message: `Tài khoản bị khoá ${LOCK_MINUTES} phút sau ${MAX_FAILED_LOGINS} lần sai ${what} — có thể đang bị dò`,
+      user,
+      ip: req.ip,
+    });
+  } else {
+    await user.save();
+    await securityEvent({ type: what === "mã 2FA" ? "mfa_failed" : "login_failed", severity: "info", message: `Sai ${what}`, user, ip: req.ip });
+  }
+}
+
+/** Hoàn tất đăng nhập: tạo phiên, báo IP mới, trả token */
+async function completeLogin(user, req, res) {
+  const newIpForAdmin = user.role === "admin" && user.lastLoginIp && user.lastLoginIp !== req.ip;
+  user.failedLogins = 0;
+  user.lockUntil = null;
+  user.lastLoginAt = new Date();
+  user.lastLoginIp = req.ip || "";
+  const { token } = await startSession(user, req);
+  await securityEvent({
+    type: "login",
+    severity: newIpForAdmin ? "warning" : "info",
+    message: newIpForAdmin ? "Tài khoản ADMIN đăng nhập từ địa chỉ IP mới" : "Đăng nhập thành công",
+    user,
+    ip: req.ip,
+  });
+  res.json({ token, user: publicUser(user) });
+}
+
+function lockedResponse(user, res) {
+  const mins = Math.ceil((user.lockUntil - Date.now()) / 60000);
+  return res.status(423).json({ error: `Tài khoản tạm khoá do nhập sai nhiều lần. Thử lại sau ${mins} phút.` });
+}
+
+/** Tin nhắn người dùng ký trong MetaMask để chứng minh mình sở hữu ví (kiểu SIWE / EIP-4361) */
+function buildWalletLinkMessage({ origin, username, address, nonce, expiresAt }) {
+  return [
+    `${origin || "NFTTrace"} yêu cầu bạn ký để LIÊN KẾT VÍ với tài khoản quản trị.`,
+    "",
+    `Tài khoản: ${username}`,
+    `Ví: ${address}`,
+    `Nonce: ${nonce}`,
+    `Hết hạn: ${expiresAt.toISOString()}`,
+    "",
+    "Ký tin nhắn này KHÔNG tốn phí gas và KHÔNG cho phép chuyển tài sản của bạn.",
+  ].join("\n");
 }
 
 /**
  * POST /api/auth/register
- * body: { username, password, displayName, role, walletAddress }
+ * body: { username, password, displayName, role }
  *
- * Đăng ký công khai chỉ tạo tài khoản manufacturer/distributor. Để tạo
- * admin đầu tiên, hãy đăng ký bình thường rồi đổi role thành "admin" trong
- * MongoDB Atlas; role gửi từ client không thể cấp quyền admin.
+ * Đăng ký công khai chỉ tạo tài khoản manufacturer/distributor. Admin đầu
+ * tiên phải đổi role thành "admin" trực tiếp trong MongoDB Atlas.
+ * Ví KHÔNG được nhận lúc đăng ký — phải liên kết sau bằng chữ ký.
  */
 router.post("/register", async (req, res) => {
   try {
-    const { username, password, displayName, role, walletAddress } = req.body;
+    const { username, password, displayName, role } = req.body;
     if (!username || !password) {
       return res.status(400).json({ error: "Thiếu username hoặc password" });
     }
-    if (password.length < 6) {
-      return res.status(400).json({ error: "Mật khẩu phải có ít nhất 6 ký tự" });
+    if (typeof password !== "string" || password.length < 8) {
+      return res.status(400).json({ error: "Mật khẩu phải có ít nhất 8 ký tự" });
     }
     if (role === "admin") {
       return res.status(403).json({ error: "Không thể tự đăng ký tài khoản admin" });
@@ -38,7 +145,7 @@ router.post("/register", async (req, res) => {
       return res.status(400).json({ error: "Vai trò đăng ký không hợp lệ" });
     }
 
-    const existing = await User.findOne({ username: username.toLowerCase() });
+    const existing = await User.findOne({ username: String(username).toLowerCase() });
     if (existing) {
       return res.status(409).json({ error: "Username đã tồn tại" });
     }
@@ -49,17 +156,21 @@ router.post("/register", async (req, res) => {
       passwordHash,
       displayName: displayName || username,
       role,
-      walletAddress: walletAddress || "",
     });
 
-    const token = signToken(user);
-    res.status(201).json({
-      token,
-      user: { id: user._id, username: user.username, displayName: user.displayName, role: user.role },
+    await securityEvent({
+      type: "register",
+      severity: "info",
+      message: `Tài khoản mới đăng ký (${role})`,
+      user,
+      ip: req.ip,
     });
+
+    const { token } = await startSession(user, req);
+    res.status(201).json({ token, user: publicUser(user) });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message || "Lỗi khi đăng ký" });
+    res.status(500).json({ error: "Lỗi khi đăng ký" });
   }
 });
 
@@ -71,78 +182,568 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ error: "Thiếu username hoặc password" });
     }
 
-    const user = await User.findOne({ username: username.toLowerCase() });
+    const user = await User.findOne({ username: String(username).toLowerCase() });
     if (!user) {
+      await bcrypt.compare(String(password), DUMMY_HASH);
       return res.status(401).json({ error: "Sai username hoặc mật khẩu" });
     }
 
-    const ok = await bcrypt.compare(password, user.passwordHash);
+    if (user.lockUntil && user.lockUntil > new Date()) return lockedResponse(user, res);
+
+    const ok = await bcrypt.compare(String(password), user.passwordHash);
     if (!ok) {
+      await registerFailure(user, req, "mật khẩu");
       return res.status(401).json({ error: "Sai username hoặc mật khẩu" });
     }
 
-    const token = signToken(user);
-    res.json({
-      token,
-      user: { id: user._id, username: user.username, displayName: user.displayName, role: user.role },
-    });
+    if (user.disabled) {
+      await securityEvent({
+        type: "login_disabled_account",
+        severity: "warning",
+        message: "Có người đăng nhập ĐÚNG mật khẩu vào tài khoản đã bị khoá",
+        user,
+        ip: req.ip,
+      });
+      return res.status(403).json({ error: "Tài khoản đã bị khoá. Liên hệ quản trị viên." });
+    }
+
+    // Bật 2FA → chưa cấp phiên, chỉ trả token tạm để làm bước 2
+    if (user.twoFactorEnabled) {
+      return res.json({ twoFactorRequired: true, mfaToken: signMfaToken(user) });
+    }
+    await completeLogin(user, req, res);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message || "Lỗi khi đăng nhập" });
+    res.status(500).json({ error: "Lỗi khi đăng nhập" });
+  }
+});
+
+/**
+ * POST /api/auth/login/2fa — bước 2 khi tài khoản bật xác thực 2 lớp.
+ * body: { mfaToken, code }  — code là 6 số từ app Authenticator,
+ * hoặc mã dự phòng dạng ABCD-EFGH (mỗi mã dùng 1 lần).
+ */
+router.post("/login/2fa", async (req, res) => {
+  try {
+    const { mfaToken, code } = req.body || {};
+    let payload;
+    try {
+      payload = jwt.verify(String(mfaToken || ""), process.env.JWT_SECRET, { algorithms: ["HS256"] });
+      if (payload.typ !== "mfa") throw new Error("sai loại token");
+    } catch {
+      return res.status(401).json({ error: "Phiên xác thực đã hết hạn — vui lòng đăng nhập lại." });
+    }
+    const user = await User.findById(payload.id);
+    if (!user || user.disabled || !user.twoFactorEnabled || (payload.tv ?? 0) !== (user.tokenVersion ?? 0)) {
+      return res.status(401).json({ error: "Không thể xác thực — vui lòng đăng nhập lại." });
+    }
+    if (user.lockUntil && user.lockUntil > new Date()) return lockedResponse(user, res);
+
+    const input = String(code || "").trim();
+    let passed = false;
+    if (/^\d{6}$/.test(input.replace(/\s/g, ""))) {
+      const step = verifyTotp(decrypt(user.twoFactorSecret), input, user.twoFactorLastStep ?? -1);
+      if (step !== null) {
+        user.twoFactorLastStep = step;
+        passed = true;
+      }
+    } else if (input) {
+      const h = hashBackupCode(input);
+      if ((user.backupCodeHashes || []).includes(h)) {
+        user.backupCodeHashes = user.backupCodeHashes.filter((x) => x !== h);
+        passed = true;
+        await securityEvent({
+          type: "mfa_backup_code_used",
+          severity: "warning",
+          message: `Đăng nhập bằng MÃ DỰ PHÒNG 2FA (còn ${user.backupCodeHashes.length} mã)`,
+          user,
+          ip: req.ip,
+        });
+      }
+    }
+    if (!passed) {
+      await registerFailure(user, req, "mã 2FA");
+      return res.status(401).json({ error: "Mã xác thực không đúng" });
+    }
+    await completeLogin(user, req, res);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Lỗi khi xác thực 2 lớp" });
   }
 });
 
 /** GET /api/auth/me — kiểm tra token còn hợp lệ không, trả lại thông tin user */
 router.get("/me", requireAuth, async (req, res) => {
-  const user = await User.findById(req.user.id).select("-passwordHash");
-  if (!user) return res.status(404).json({ error: "Không tìm thấy tài khoản" });
-  res.json(user);
+  const full = await User.findById(req.user.id);
+  if (!full) return res.status(404).json({ error: "Không tìm thấy tài khoản" });
+  const user = await User.findById(req.user.id).select(PRIVATE_FIELDS);
+  const out = typeof user.toJSON === "function" ? user.toJSON() : { ...user };
+  out.telegramLinked = Boolean(full.telegramChatId);
+  out.backupCodesLeft = (full.backupCodeHashes || []).length;
+  out.sessionId = req.authSession._id;
+  res.json(out);
+});
+
+// ---------------------------------------------------------------------
+// Phiên đăng nhập của chính mình
+// ---------------------------------------------------------------------
+
+function sessionView(s, currentSid) {
+  const now = Date.now();
+  let state = "active";
+  if (s.revokedAt) state = s.revokedReason === "idle" ? "idle" : "revoked";
+  else if (new Date(s.expiresAt).getTime() < now) state = "expired";
+  return {
+    id: s._id,
+    current: s._id === currentSid,
+    ip: s.ip,
+    lastSeenIp: s.lastSeenIp || s.ip,
+    device: shortUA(s.userAgent),
+    createdAt: s.createdAt,
+    lastSeenAt: s.lastSeenAt,
+    newIp: Boolean(s.newIp),
+    state,
+    revokedReason: s.revokedReason || "",
+  };
+}
+
+/** GET /api/auth/me/sessions — phiên đang hoạt động + 20 lần đăng nhập gần nhất */
+router.get("/me/sessions", requireAuth, async (req, res) => {
+  const all = (await Session.find({ userId: req.dbUser._id })).sort(
+    (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+  );
+  const views = all.map((s) => sessionView(s, req.authSession._id));
+  res.json({ active: views.filter((v) => v.state === "active"), history: views.slice(0, 20) });
+});
+
+/** DELETE /api/auth/me/sessions/:sid — đăng xuất 1 thiết bị */
+router.delete("/me/sessions/:sid", requireAuth, async (req, res) => {
+  const s = await Session.findById(req.params.sid);
+  if (!s || String(s.userId) !== String(req.dbUser._id)) return res.status(404).json({ error: "Không tìm thấy phiên" });
+  await revokeSession(s._id, "user_revoked");
+  res.json({ ok: true });
+});
+
+/** POST /api/auth/me/logout — đăng xuất phiên hiện tại */
+router.post("/me/logout", requireAuth, async (req, res) => {
+  await revokeSession(req.authSession._id, "logout");
+  res.json({ ok: true });
+});
+
+/** POST /api/auth/me/logout-all — đăng xuất khỏi mọi thiết bị (kể cả thiết bị này) */
+router.post("/me/logout-all", requireAuth, async (req, res) => {
+  await User.updateOne({ _id: req.user.id }, { $inc: { tokenVersion: 1 } });
+  await revokeAllSessions(req.dbUser._id, "logout_all");
+  await securityEvent({ type: "logout_all", severity: "info", message: "Tự đăng xuất mọi phiên", user: req.dbUser, ip: req.ip });
+  res.json({ ok: true });
 });
 
 /**
- * PATCH /api/auth/me/wallet — người dùng tự liên kết địa chỉ ví MetaMask
- * vào tài khoản của mình (gọi khi họ bấm "Kết nối ví" ở trang quản trị).
- * body: { walletAddress }
- * Đặt roleStatus = "cho_duyet" để admin biết có yêu cầu mới cần xem xét.
+ * GET /api/auth/me/security-notices — các lần đăng nhập từ IP MỚI mà chủ
+ * tài khoản chưa xác nhận. Trang admin hiện thành banner cảnh báo.
  */
-router.patch("/me/wallet", requireAuth, async (req, res) => {
+router.get("/me/security-notices", requireAuth, async (req, res) => {
+  const list = (await Session.find({ userId: req.dbUser._id, newIp: true, acknowledged: false }))
+    .filter((s) => s._id !== req.authSession._id)
+    .map((s) => sessionView(s, req.authSession._id));
+  res.json(list);
+});
+
+/** POST /api/auth/me/security-notices/ack — "Đúng là tôi" */
+router.post("/me/security-notices/ack", requireAuth, async (req, res) => {
+  const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids : [];
+  for (const id of ids) {
+    const s = await Session.findById(id);
+    if (s && String(s.userId) === String(req.dbUser._id)) await Session.updateOne({ _id: id }, { acknowledged: true });
+  }
+  res.json({ ok: true });
+});
+
+/**
+ * POST /api/auth/me/not-me — "Không phải tôi" bấm TRONG APP (chủ tài khoản
+ * đang đăng nhập hợp lệ ở thiết bị này). Đăng xuất mọi thiết bị KHÁC, báo
+ * động admin, và yêu cầu đổi mật khẩu ngay.
+ * body: { sessionId } — phiên lạ bị nghi
+ */
+router.post("/me/not-me", requireAuth, async (req, res) => {
+  const sid = req.body && req.body.sessionId;
+  let detail = "";
+  if (sid) {
+    const s = await Session.findById(sid);
+    if (s && String(s.userId) === String(req.dbUser._id)) {
+      detail = ` Phiên bị nghi: IP ${s.ip}, ${shortUA(s.userAgent)}.`;
+      await Session.updateOne({ _id: sid }, { acknowledged: true });
+    }
+  }
+  await revokeAllSessions(req.dbUser._id, "not_me", req.authSession._id);
+  await securityEvent({
+    type: "not_me_reported",
+    severity: "critical",
+    message: `Chủ tài khoản báo "KHÔNG PHẢI TÔI" trong app — đã đăng xuất mọi thiết bị khác, yêu cầu đổi mật khẩu.${detail}`,
+    user: req.dbUser,
+    ip: req.ip,
+  });
+  res.json({ ok: true, mustChangePassword: true });
+});
+
+/**
+ * POST /api/auth/me/password — đổi mật khẩu.
+ * body: { currentPassword, newPassword, code? } (code bắt buộc nếu bật 2FA)
+ * Đổi xong: mọi phiên cũ bị đăng xuất, trả token mới cho thiết bị này.
+ */
+router.post("/me/password", requireAuth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword, code } = req.body || {};
+    const user = await User.findById(req.dbUser._id);
+    if (!(await bcrypt.compare(String(currentPassword || ""), user.passwordHash))) {
+      await registerFailure(user, req, "mật khẩu");
+      return res.status(401).json({ error: "Mật khẩu hiện tại không đúng" });
+    }
+    if (typeof newPassword !== "string" || newPassword.length < 8) {
+      return res.status(400).json({ error: "Mật khẩu mới phải có ít nhất 8 ký tự" });
+    }
+    if (newPassword === currentPassword) {
+      return res.status(400).json({ error: "Mật khẩu mới phải khác mật khẩu cũ" });
+    }
+    if (user.twoFactorEnabled) {
+      const step = verifyTotp(decrypt(user.twoFactorSecret), code, user.twoFactorLastStep ?? -1);
+      if (step === null) return res.status(401).json({ error: "Mã xác thực 2 lớp không đúng" });
+      user.twoFactorLastStep = step;
+    }
+    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    await user.save();
+    await revokeAllSessions(user._id, "password_changed");
+    await securityEvent({ type: "password_changed", severity: "warning", message: "Đổi mật khẩu — mọi phiên cũ đã bị đăng xuất", user, ip: req.ip });
+    const { token } = await startSession(user, req);
+    res.json({ token, user: publicUser(user) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Lỗi khi đổi mật khẩu" });
+  }
+});
+
+// ---------------------------------------------------------------------
+// Xác thực 2 lớp (TOTP)
+// ---------------------------------------------------------------------
+
+/** POST /api/auth/me/2fa/setup — tạo khoá bí mật mới, trả mã QR để quét bằng app Authenticator */
+router.post("/me/2fa/setup", requireAuth, async (req, res) => {
+  const user = await User.findById(req.dbUser._id);
+  if (user.twoFactorEnabled) return res.status(409).json({ error: "Đã bật xác thực 2 lớp" });
+  const secret = generateTotpSecret();
+  user.twoFactorPendingSecret = encrypt(secret);
+  await user.save();
+  const uri = totpUri({ secret, account: user.username });
+  res.json({ secret, otpauthUrl: uri, qrDataUrl: await QRCode.toDataURL(uri, { margin: 1, width: 220 }) });
+});
+
+/** POST /api/auth/me/2fa/enable — body { code } — xác nhận bằng mã 6 số đầu tiên */
+router.post("/me/2fa/enable", requireAuth, async (req, res) => {
+  const user = await User.findById(req.dbUser._id);
+  if (!user.twoFactorPendingSecret) return res.status(400).json({ error: "Chưa tạo mã QR — bấm Bật 2FA lại" });
+  const secret = decrypt(user.twoFactorPendingSecret);
+  const step = verifyTotp(secret, req.body && req.body.code);
+  if (step === null) return res.status(401).json({ error: "Mã không đúng — kiểm tra lại giờ trên điện thoại" });
+  const backupCodes = generateBackupCodes();
+  user.twoFactorEnabled = true;
+  user.twoFactorSecret = encrypt(secret);
+  user.twoFactorPendingSecret = "";
+  user.twoFactorLastStep = step;
+  user.backupCodeHashes = backupCodes.map(hashBackupCode);
+  await user.save();
+  await securityEvent({ type: "mfa_enabled", severity: "info", message: "Bật xác thực 2 lớp", user, ip: req.ip });
+  // Mã dự phòng chỉ hiện ĐÚNG 1 LẦN này — server chỉ lưu bản băm
+  res.json({ ok: true, backupCodes });
+});
+
+/** POST /api/auth/me/2fa/disable — body { password, code } */
+router.post("/me/2fa/disable", requireAuth, async (req, res) => {
+  const user = await User.findById(req.dbUser._id);
+  if (!user.twoFactorEnabled) return res.status(400).json({ error: "Chưa bật xác thực 2 lớp" });
+  const { password, code } = req.body || {};
+  if (!(await bcrypt.compare(String(password || ""), user.passwordHash))) {
+    await registerFailure(user, req, "mật khẩu");
+    return res.status(401).json({ error: "Mật khẩu không đúng" });
+  }
+  if (verifyTotp(decrypt(user.twoFactorSecret), code, user.twoFactorLastStep ?? -1) === null) {
+    return res.status(401).json({ error: "Mã xác thực không đúng" });
+  }
+  user.twoFactorEnabled = false;
+  user.twoFactorSecret = "";
+  user.backupCodeHashes = [];
+  user.twoFactorLastStep = -1;
+  await user.save();
+  await securityEvent({
+    type: "mfa_disabled",
+    severity: user.role === "admin" ? "critical" : "warning",
+    message: "TẮT xác thực 2 lớp",
+    user,
+    ip: req.ip,
+  });
+  res.json({ ok: true });
+});
+
+/** POST /api/auth/me/2fa/backup-codes — body { code } — tạo bộ mã dự phòng mới (bộ cũ mất hiệu lực) */
+router.post("/me/2fa/backup-codes", requireAuth, async (req, res) => {
+  const user = await User.findById(req.dbUser._id);
+  if (!user.twoFactorEnabled) return res.status(400).json({ error: "Chưa bật xác thực 2 lớp" });
+  const step = verifyTotp(decrypt(user.twoFactorSecret), req.body && req.body.code, user.twoFactorLastStep ?? -1);
+  if (step === null) return res.status(401).json({ error: "Mã xác thực không đúng" });
+  const backupCodes = generateBackupCodes();
+  user.backupCodeHashes = backupCodes.map(hashBackupCode);
+  user.twoFactorLastStep = step;
+  await user.save();
+  res.json({ backupCodes });
+});
+
+// ---------------------------------------------------------------------
+// Telegram cá nhân
+// ---------------------------------------------------------------------
+
+/**
+ * POST /api/auth/me/telegram/link — tạo mã liên kết 10 phút.
+ * Người dùng mở link t.me/<bot>?start=<mã> → bấm Start → backend (webhook)
+ * nhận mã và gắn chat Telegram đó vào tài khoản.
+ */
+router.post("/me/telegram/link", requireAuth, async (req, res) => {
+  const bot = process.env.TELEGRAM_BOT_USERNAME;
+  if (!process.env.TELEGRAM_BOT_TOKEN || !bot) {
+    return res.status(503).json({ error: "Hệ thống chưa cấu hình Telegram bot (TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME)" });
+  }
+  const code = crypto.randomBytes(12).toString("hex");
+  await User.updateOne(
+    { _id: req.dbUser._id },
+    { telegramLinkCode: code, telegramLinkExpires: new Date(Date.now() + 10 * 60 * 1000) }
+  );
+  res.json({ url: `https://t.me/${bot.replace(/^@/, "")}?start=${code}`, expiresInMinutes: 10 });
+});
+
+/** DELETE /api/auth/me/telegram — huỷ liên kết */
+router.delete("/me/telegram", requireAuth, async (req, res) => {
+  await User.updateOne({ _id: req.dbUser._id }, { telegramChatId: "" });
+  await securityEvent({ type: "telegram_unlinked", severity: "warning", message: "Huỷ liên kết Telegram nhận cảnh báo", user: req.dbUser, ip: req.ip });
+  res.json({ ok: true });
+});
+
+/**
+ * POST /api/auth/me/wallet/nonce — bước 1 liên kết ví.
+ * body: { walletAddress } → trả về { message } để MetaMask ký (personal_sign).
+ */
+router.post("/me/wallet/nonce", requireAuth, async (req, res) => {
   const { walletAddress } = req.body;
-  if (!/^0x[a-fA-F0-9]{40}$/.test(walletAddress || "")) {
+  if (!ethers.isAddress(walletAddress || "")) {
     return res.status(400).json({ error: "Địa chỉ ví không hợp lệ" });
   }
-  const user = await User.findByIdAndUpdate(
-    req.user.id,
-    { walletAddress: walletAddress.toLowerCase(), roleStatus: "cho_duyet" },
-    { new: true }
-  ).select("-passwordHash");
-  if (!user) return res.status(404).json({ error: "Không tìm thấy tài khoản" });
-  res.json(user);
+  const address = ethers.getAddress(walletAddress);
+  const nonce = crypto.randomBytes(16).toString("hex");
+  const expiresAt = new Date(Date.now() + NONCE_TTL_MS);
+
+  await User.updateOne(
+    { _id: req.user.id },
+    { walletNonce: nonce, walletNonceFor: address.toLowerCase(), walletNonceExpires: expiresAt }
+  );
+
+  const message = buildWalletLinkMessage({
+    origin: req.headers.origin,
+    username: req.dbUser.username,
+    address,
+    nonce,
+    expiresAt,
+  });
+  res.json({ message });
 });
 
 /**
- * GET /api/auth/users — CHỈ ADMIN — danh sách toàn bộ tài khoản đã đăng ký,
- * dùng để hiển thị màn "Quản lý người dùng" và duyệt cấp quyền on-chain.
+ * PATCH /api/auth/me/wallet — bước 2 liên kết ví.
+ * body: { walletAddress, message, signature }
+ *
+ * Backend tự kiểm tra chữ ký: chỉ chủ thật của ví mới ký được → kẻ chiếm
+ * tài khoản không thể gắn ví lạ mà không có private key ví đó.
+ * Nếu tài khoản ĐÃ ĐƯỢC DUYỆT mà đổi sang ví khác → báo động đỏ cho admin.
  */
+router.patch("/me/wallet", requireAuth, async (req, res) => {
+  try {
+    const { walletAddress, message, signature } = req.body;
+    if (!ethers.isAddress(walletAddress || "") || !message || !signature) {
+      return res.status(400).json({ error: "Thiếu địa chỉ ví hoặc chữ ký" });
+    }
+    const address = ethers.getAddress(walletAddress).toLowerCase();
+
+    const user = await User.findById(req.user.id);
+    if (!user.walletNonce || !user.walletNonceExpires || user.walletNonceExpires < new Date()) {
+      return res.status(400).json({ error: "Yêu cầu ký đã hết hạn — vui lòng thử lại" });
+    }
+    if (user.walletNonceFor !== address || !String(message).includes(`Nonce: ${user.walletNonce}`)) {
+      return res.status(400).json({ error: "Tin nhắn ký không khớp yêu cầu" });
+    }
+
+    let recovered;
+    try {
+      recovered = ethers.verifyMessage(String(message), String(signature)).toLowerCase();
+    } catch {
+      return res.status(400).json({ error: "Chữ ký không hợp lệ" });
+    }
+    // Nonce dùng 1 lần — xoá ngay dù đúng hay sai
+    user.walletNonce = "";
+    user.walletNonceFor = "";
+    user.walletNonceExpires = null;
+
+    if (recovered !== address) {
+      await user.save();
+      await securityEvent({
+        type: "wallet_signature_mismatch",
+        severity: "warning",
+        message: "Chữ ký liên kết ví không khớp địa chỉ khai báo",
+        user,
+        wallet: address,
+        ip: req.ip,
+      });
+      return res.status(400).json({ error: "Chữ ký không khớp với địa chỉ ví" });
+    }
+
+    const owner = await User.findOne({ walletAddress: address, _id: { $ne: user._id } }).select("_id");
+    if (owner) {
+      await user.save();
+      return res.status(409).json({ error: "Ví này đã được liên kết với một tài khoản khác" });
+    }
+
+    const oldWallet = user.walletAddress || "";
+    const wasApproved = user.roleStatus === "da_duyet";
+
+    if (oldWallet === address) {
+      // Cùng ví — chỉ cập nhật thời điểm xác minh, KHÔNG reset trạng thái duyệt
+      user.walletVerifiedAt = new Date();
+      await user.save();
+    } else {
+      user.previousWallet = oldWallet;
+      user.walletAddress = address;
+      user.walletVerifiedAt = new Date();
+      user.walletChangedAt = oldWallet ? new Date() : null;
+      user.roleStatus = "cho_duyet";
+      await user.save();
+
+      await securityEvent({
+        type: oldWallet ? "wallet_changed" : "wallet_linked",
+        severity: oldWallet ? (wasApproved ? "critical" : "warning") : "info",
+        message: oldWallet
+          ? `Tài khoản${wasApproved ? " ĐÃ DUYỆT" : ""} đổi ví ${oldWallet} → ${address}. ` +
+            "Xác minh với đối tác qua kênh khác (gọi điện) TRƯỚC khi cấp quyền cho ví mới. " +
+            (wasApproved ? "Cân nhắc thu hồi quyền on-chain của ví cũ." : "")
+          : "Liên kết ví mới, đang chờ duyệt",
+        user,
+        wallet: address,
+        ip: req.ip,
+        meta: { oldWallet },
+      });
+    }
+
+    const fresh = await User.findById(user._id).select(PRIVATE_FIELDS);
+    res.json(fresh);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Lỗi khi liên kết ví" });
+  }
+});
+
+// ---------------------------------------------------------------------
+// Chỉ admin
+// ---------------------------------------------------------------------
+
+/** GET /api/auth/users — danh sách tài khoản cho màn "Quản lý người dùng" */
 router.get("/users", requireAuth, requireAdmin, async (req, res) => {
-  const users = await User.find().select("-passwordHash").sort({ createdAt: -1 });
+  const users = await User.find().select(PRIVATE_FIELDS).sort({ createdAt: -1 });
   res.json(users);
 });
 
 /**
- * PATCH /api/auth/users/:id/approve — CHỈ ADMIN — đánh dấu đã duyệt cấp
- * quyền on-chain cho tài khoản này. Gọi SAU KHI admin đã tự ký giao dịch
- * contract.grantRole() thành công bằng ví MetaMask của chính admin (xem
- * frontend/js/admin.js) — endpoint này chỉ cập nhật nhãn hiển thị, không
- * tự thực hiện giao dịch blockchain nào cả.
+ * PATCH /api/auth/users/:id/approve — đánh dấu đã duyệt SAU KHI quyền
+ * on-chain đã thật sự được cấp. Backend tự đọc contract.hasRole() để kiểm
+ * tra, không tin lời frontend.
  */
 router.patch("/users/:id/approve", requireAuth, requireAdmin, async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ error: "Không tìm thấy tài khoản" });
+    if (!user.walletAddress || !user.walletVerifiedAt) {
+      return res.status(409).json({ error: "Tài khoản chưa liên kết ví bằng chữ ký" });
+    }
+    const roleName = USER_ROLE_TO_CONTRACT_ROLE[user.role];
+    if (!roleName) return res.status(400).json({ error: "Vai trò này không có quyền on-chain tương ứng" });
+
+    const contract = getReadOnlyContract();
+    const hasRole = await contract.hasRole(await contract[roleName](), user.walletAddress);
+    if (!hasRole) {
+      return res.status(409).json({ error: "Chưa thấy quyền trên blockchain cho ví này — giao dịch cấp quyền chưa thành công?" });
+    }
+
+    user.roleStatus = "da_duyet";
+    await user.save();
+    await securityEvent({
+      type: "user_approved",
+      severity: "info",
+      message: `Admin ${req.dbUser.username} duyệt ${roleName} cho tài khoản`,
+      user,
+      wallet: user.walletAddress,
+      ip: req.ip,
+    });
+    res.json(await User.findById(user._id).select(PRIVATE_FIELDS));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Không kiểm tra được quyền trên blockchain" });
+  }
+});
+
+/**
+ * PATCH /api/auth/users/:id/disable — khoá / mở khoá tài khoản.
+ * body: { disabled: true|false }. Khoá = đăng xuất mọi phiên ngay lập tức.
+ * Lưu ý: khoá tài khoản web KHÔNG tước quyền on-chain của ví — muốn vậy
+ * phải dùng Guardian (flagCompromised) hoặc Operator (revokeRole).
+ */
+router.patch("/users/:id/disable", requireAuth, requireAdmin, async (req, res) => {
+  const disabled = Boolean(req.body && req.body.disabled);
+  if (String(req.params.id) === String(req.dbUser._id)) {
+    return res.status(400).json({ error: "Không thể tự khoá tài khoản của chính mình" });
+  }
   const user = await User.findByIdAndUpdate(
     req.params.id,
-    { roleStatus: "da_duyet" },
+    disabled ? { $set: { disabled: true }, $inc: { tokenVersion: 1 } } : { $set: { disabled: false } },
     { new: true }
-  ).select("-passwordHash");
+  ).select(PRIVATE_FIELDS);
   if (!user) return res.status(404).json({ error: "Không tìm thấy tài khoản" });
+  await securityEvent({
+    type: disabled ? "user_disabled" : "user_enabled",
+    severity: "warning",
+    message: `Admin ${req.dbUser.username} ${disabled ? "KHOÁ" : "mở khoá"} tài khoản`,
+    user,
+    ip: req.ip,
+  });
   res.json(user);
+});
+
+/** POST /api/auth/users/:id/revoke-sessions — đăng xuất mọi phiên của tài khoản */
+router.post("/users/:id/revoke-sessions", requireAuth, requireAdmin, async (req, res) => {
+  const user = await User.findByIdAndUpdate(req.params.id, { $inc: { tokenVersion: 1 } }, { new: true }).select(
+    PRIVATE_FIELDS
+  );
+  if (!user) return res.status(404).json({ error: "Không tìm thấy tài khoản" });
+  await securityEvent({
+    type: "sessions_revoked",
+    severity: "warning",
+    message: `Admin ${req.dbUser.username} đăng xuất mọi phiên của tài khoản`,
+    user,
+    ip: req.ip,
+  });
+  res.json({ ok: true });
+});
+
+/** GET /api/auth/audit?severity=warning — nhật ký bảo mật mới nhất */
+router.get("/audit", requireAuth, requireAdmin, async (req, res) => {
+  const filter = {};
+  if (req.query.severity === "warning") filter.severity = { $in: ["warning", "critical"] };
+  if (req.query.severity === "critical") filter.severity = "critical";
+  const logs = await AuditLog.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+  res.json(logs);
 });
 
 module.exports = router;

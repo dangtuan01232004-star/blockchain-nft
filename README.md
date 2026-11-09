@@ -151,6 +151,10 @@ tiếp từ ví MetaMask của người dùng ngay trên trình duyệt. Tài kh
 đăng nhập (MongoDB) chỉ là lớp "gác cổng" vào giao diện quản trị, hoàn
 toàn tách biệt với việc ký giao dịch on-chain.
 
+Khi chạy local mà chưa cấu hình `FRONTEND_ORIGIN`, backend chỉ cho phép
+trình duyệt có origin `localhost`/`127.0.0.1` gọi API. Khi deploy, cần
+đặt `FRONTEND_ORIGIN` thành URL frontend thực tế.
+
 ### Bước 6 — Tạo tài khoản quản trị đầu tiên và chạy frontend
 
 Frontend là HTML/CSS/JS thuần, không cần build. Cách đơn giản nhất:
@@ -344,12 +348,18 @@ const PROD_API_BASE = "https://ten-project.onrender.com"; // URL Render thật
 Commit + push (`git add . && git commit -m "config prod API" && git push`)
 — Vercel tự động deploy lại sau vài chục giây.
 
-**b) Quay lại Render**, vào tab Environment, điền nốt 2 biến còn thiếu:
+**b) Quay lại Render**, vào tab Environment, điền các biến còn thiếu:
 ```
 PUBLIC_BASE_URL=https://ten-project.onrender.com
 FRONTEND_VERIFY_URL=https://ten-project-frontend.vercel.app/verify.html
+FRONTEND_ORIGIN=https://ten-project-frontend.vercel.app
 ```
-Lưu lại — Render tự redeploy.
+`FRONTEND_ORIGIN` phải là origin frontend chính xác (gồm `https://`, không
+thêm đường dẫn như `/verify.html` hay dấu `/` cuối). Nếu frontend có nhiều
+origin hợp lệ, phân tách chúng bằng dấu phẩy.
+
+Lưu lại — Render tự redeploy. Nếu bỏ trống `FRONTEND_ORIGIN` ở production,
+backend sẽ từ chối các yêu cầu trình duyệt cross-origin.
 
 ### 7.8. Mint sản phẩm mới và test
 
@@ -461,3 +471,90 @@ blockchain-nft-traceability/
     ├── admin.html                     # Mint & quản lý chuỗi cung ứng
     └── css/styles.css
 ```
+
+## 8. Mô hình bảo mật (phòng ngừa → phát hiện → ứng phó)
+
+### 8.1. Phân quyền nhiều tầng trên smart contract
+
+| Vai trò | Ai giữ | Làm được | KHÔNG làm được |
+|---|---|---|---|
+| `DEFAULT_ADMIN_ROLE` | Ví **Safe multisig** (2/3) | Cấp/thu hồi Operator, Guardian; mở lại hệ thống (`unpause`); gỡ cờ ví | — (cần đủ chữ ký) |
+| `OPERATOR_ROLE` | Ví vận hành hằng ngày | Cấp/thu hồi quyền nhà sản xuất, phân phối | Cấp quyền admin/guardian/operator → **không leo thang được** |
+| `GUARDIAN_ROLE` | Ví phản ứng khẩn cấp | `pause`, `flagCompromised`, `revokeAuthenticity` | Cấp quyền cho ai; mở lại hệ thống |
+| `MANUFACTURER_ROLE` | Nhà sản xuất | Mint | — |
+| `DISTRIBUTOR_ROLE` | Phân phối | Chuyển giao token **mình đang giữ** | Chuyển token của người khác |
+
+Ví deploy **tự từ bỏ mọi quyền** sau khi bàn giao cho multisig (đặt `ADMIN_MULTISIG_ADDRESS` trong `smart-contracts/.env`). NFT chỉ chuyển được qua `transferCustody()` (đã chặn `transferFrom`) nên lịch sử chuỗi cung ứng luôn đầy đủ.
+
+### 8.2. Khi một ví bị hack
+
+1. **Guardian** bấm *Dừng khẩn cấp* (`pause`) ở mục **Bảo mật & khẩn cấp** trong `admin.html`.
+2. Guardian **gắn cờ** ví bị hack kèm thời điểm nghi lộ khoá (`flagCompromised`) → ví mất quyền ngay; mọi sản phẩm ví đó mint/chuyển giao từ thời điểm đó hiện cảnh báo "đang kiểm tra" khi người tiêu dùng quét QR. Sản phẩm trước đó không bị ảnh hưởng.
+3. Admin khoá tài khoản web của người đó + đăng xuất mọi phiên (mục **Quản lý người dùng**).
+4. Điều tra, thu hồi xác thực (`revokeAuthenticity`) các sản phẩm xác nhận là giả.
+5. Đối tác tạo ví mới → xác minh qua kênh khác (gọi điện) → Operator cấp quyền lại.
+6. **Multisig** mở lại hệ thống (`unpause`) trong app.safe.global.
+
+### 8.3. Lớp tài khoản web (backend)
+
+- Role & phiên đăng nhập luôn đọc lại từ MongoDB (không tin token); khoá tài khoản / đổi `tokenVersion` có hiệu lực ngay.
+- Liên kết ví bắt buộc **ký tin nhắn** (kiểu SIWE, nonce dùng 1 lần) → chiếm được tài khoản web cũng không gắn được ví lạ.
+- Tài khoản đã duyệt mà đổi ví → về "chờ duyệt" + **cảnh báo nghiêm trọng**; màn duyệt hiện rõ ví cũ → ví mới.
+- Duyệt quyền: backend tự kiểm tra `hasRole()` trên chain.
+- Khoá tạm tài khoản sau 5 lần sai mật khẩu; chỉ admin thêm đối tác vào danh bạ.
+- Backend từ chối khởi động trên Render nếu `JWT_SECRET` yếu/là chuỗi mẫu.
+- Lỗi kết nối blockchain không còn bị hiển thị nhầm thành "hàng giả".
+
+### 8.4. Giám sát & cảnh báo
+
+- Mọi sự kiện nhạy cảm ghi vào `AuditLog` (MongoDB), xem ở `admin.html` → **Bảo mật & khẩn cấp**, và gửi **Telegram** cho mức cảnh báo/nghiêm trọng (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`).
+- `backend/scripts/monitor.js` quét sự kiện on-chain (cấp quyền cho ví lạ, mint dồn dập, mint từ ví lạ, pause, gắn cờ...) — chạy mỗi 5 phút bằng **GitHub Actions** (`.github/workflows/security-monitor.yml`), không phụ thuộc Render Free bị "ngủ". Cần thêm Secrets `RPC_URL`, `MONGODB_URI`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` trong repo GitHub.
+
+### 8.5. Chống kẻ "ngồi xem" — phát hiện & giảm thiệt hại
+
+**Phát hiện**
+- **Đăng nhập từ IP mới** (mọi tài khoản): chủ tài khoản nhận Telegram kèm nút **"Không phải tôi"** (khoá tài khoản + đăng xuất mọi thiết bị + báo admin); trong app hiện banner đỏ với nút *Đúng là tôi / Không phải tôi*.
+- **Danh sách thiết bị đang đăng nhập** + lịch sử đăng nhập trong mục *Tài khoản của tôi*; đăng xuất từng thiết bị từ xa.
+- **Dùng song song**: cùng tài khoản hoạt động từ 2 IP trong 10 phút → cảnh báo.
+- **Ghi log mỗi lần xem thông tin khách hàng**; > 20 đơn/giờ cảnh báo, > 50 đơn/giờ chặn.
+- **Bẫy dữ liệu (canary)**: admin tạo đơn giả dùng SĐT do mình giữ; ai mở xem → báo động; SĐT bị gọi lạ → dữ liệu đã lộ ra ngoài.
+
+**Giảm thiệt hại**
+- Danh sách đơn **che mặc định** (`0912***678`, `…, Hà Nội`); *Xem đầy đủ* hiện 60 giây rồi tự che lại.
+- Tên/SĐT/địa chỉ **mã hoá AES-256-GCM** trong MongoDB (`DATA_ENCRYPTION_KEY`); đơn cũ tự được mã hoá khi backend khởi động.
+- **Tự xoá thông tin cá nhân** 90 ngày sau khi giao (180 ngày nếu chưa giao).
+- **Xác thực 2 lớp (TOTP)** với app Authenticator + 8 mã dự phòng; `REQUIRE_ADMIN_2FA=true` bắt buộc admin bật.
+- **Phiên ngắn**: tự đăng xuất sau 30 phút không thao tác, tối đa 8 giờ; đổi mật khẩu đăng xuất mọi thiết bị.
+
+Cài Telegram cá nhân: đặt `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_SECRET` trên Render → chạy `node scripts/telegram-setup.js` một lần → mỗi người vào *Tài khoản của tôi → Liên kết Telegram*.
+
+### 8.6. Mã cào dùng 1 lần (chống sao chép QR)
+
+**Vì sao cần:** QR in trên bao bì ai cũng chụp và in lại được — blockchain chỉ chứng minh *mã QR là thật*, không chứng minh *sản phẩm trong tay là bản thật*. Mã cào giải quyết việc đó: mỗi sản phẩm có 1 mã bí mật dưới lớp bạc, **chỉ kích hoạt được 1 lần**.
+
+**Luồng:**
+1. Nhà sản xuất mint → hệ thống sinh mã 10 ký tự (vd `K7QM-4XPA-9R`, bỏ ký tự dễ nhầm 0/O/1/I/L) → **hiện đúng 1 lần** kèm nút *In tem* (QR + mã + hướng dẫn). Chỉ ví đã mint sản phẩm mới sinh được mã (backend kiểm tra trên chain).
+2. Người mua cào tem → quét QR → nhập mã (+ SĐT/email tuỳ chọn để khôi phục) → trở thành **chủ sở hữu**; trình duyệt giữ "chìa khoá chủ".
+3. Quét lại:
+
+| Trạng thái | Người quét thấy |
+|---|---|
+| Chưa kích hoạt | Ô nhập mã + "đang xem ở cửa hàng: lớp cào đã bị cào thì đừng mua" |
+| Chủ sở hữu | ✅ "Đây là sản phẩm của bạn" |
+| Người khác đã kích hoạt | ⚠️ ngày kích hoạt + "vừa mua mới → nghi hàng giả" + nút **Báo nghi hàng giả** |
+| Bị khoá | 🔒 nhập sai 5 lần → khoá 1 giờ |
+
+**Bảo mật:**
+- Server **không lưu mã gốc** — chỉ HMAC-SHA256 với khoá bí mật (pepper) suy ra từ `DATA_ENCRYPTION_KEY`; lộ toàn bộ database cũng không suy ra được mã nào.
+- Mã gắn với từng sản phẩm (mã của sản phẩm A không dùng cho B). Mã không nằm trong QR, không lên blockchain.
+- Chống đoán: ~49 bit ngẫu nhiên + khoá 5 lần sai/sản phẩm + giới hạn theo IP; đoán sai hàng loạt → cảnh báo admin.
+- Kích hoạt nguyên tử: 2 người nhập đúng cùng lúc chỉ 1 người thắng.
+- Nhập ĐÚNG mã đã được dùng → cảnh báo admin (dấu hiệu tem bị sao chép).
+- Tem in hỏng / lộ trước khi bán → *🎟 Mã cào* trên thẻ sản phẩm để **cấp lại** (tem cũ vô hiệu ngay; sản phẩm đã có chủ thì không cấp lại được).
+- Khách đổi điện thoại → admin gọi xác minh rồi tạo **link khôi phục** (mục *Bảo mật & khẩn cấp*); link cũ mất hiệu lực.
+
+**Hạn chế cần nêu trong báo cáo:** hệ thống không phân biệt thật/giả nếu khách **chưa cào tem** — cần in hướng dẫn "cào & kích hoạt ngay khi nhận hàng". Kẻ xấu có thể cố ý nhập sai để khoá tạm 1 giờ việc kích hoạt một sản phẩm (không chiếm được sản phẩm).
+
+### 8.7. Test
+
+`npx hardhat test` gồm 18 test bảo mật mới (`test/ProductNFT.security.test.js`): chống leo thang đặc quyền, pause, gắn cờ ví và khoanh vùng sản phẩm, chặn chuyển token ngoài luồng.

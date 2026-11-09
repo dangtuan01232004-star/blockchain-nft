@@ -3,7 +3,9 @@ const Order = require("../models/Order");
 const SearchLog = require("../models/SearchLog");
 const { listProductsFromBlockchain } = require("../services/productCatalog");
 const { listProducts } = require("../services/cache");
-const { requireAuth, requireApproved } = require("../middleware/auth");
+const { requireAuth, requireApproved, requireAdmin } = require("../middleware/auth");
+const { protectBuyerFields, maskedView, revealOrder } = require("../services/orderPrivacy");
+const { securityEvent } = require("../services/alerts");
 
 const router = express.Router();
 
@@ -88,16 +90,24 @@ router.post("/orders", async (req, res) => {
     if (!/^[0-9+\s-]{8,15}$/.test(buyerPhone)) {
       return res.status(400).json({ error: "Số điện thoại không hợp lệ" });
     }
+    // Thông tin cá nhân được MÃ HOÁ trước khi lưu
     const order = await Order.create({
       tokenId: String(tokenId),
       productName: productName || "",
       productCode: productCode || "",
+      ...protectBuyerFields({ buyerName, buyerPhone, buyerAddress, note: note || "" }),
+    });
+    // Trả lại cho chính người mua thông tin họ vừa nhập (không đọc lại từ DB)
+    res.status(201).json({
+      _id: order._id,
+      tokenId: order.tokenId,
+      productName: order.productName,
       buyerName,
       buyerPhone,
       buyerAddress,
-      note: note || "",
+      status: order.status,
+      createdAt: order.createdAt,
     });
-    res.status(201).json(order);
   } catch (err) {
     console.error(err);
     if (err.name === "ValidationError") {
@@ -115,7 +125,19 @@ function getIssuedTokenIds(walletAddress) {
     .map((product) => String(product.tokenId));
 }
 
-/** GET /api/shop/orders — chỉ tài khoản đã duyệt xem đơn sản phẩm mình phát hành */
+/** Lấy đơn mà tài khoản này được phép xem (admin: tất cả; NSX: đơn sản phẩm mình phát hành) */
+async function findAllowedOrder(req, orderId) {
+  const order = await Order.findById(orderId);
+  if (!order) return null;
+  if (req.dbUser.role === "admin") return order;
+  const tokenIds = new Set(await getIssuedTokenIds(req.dbUser.walletAddress));
+  return tokenIds.has(order.tokenId) ? order : null;
+}
+
+/**
+ * GET /api/shop/orders — danh sách đơn, thông tin người mua ĐÃ CHE
+ * (0912***678, "…, Hà Nội"). Muốn xem đầy đủ phải mở từng đơn.
+ */
 router.get("/orders", requireAuth, requireApproved, async (req, res) => {
   try {
     let orders = await Order.find().sort({ createdAt: -1 });
@@ -123,10 +145,27 @@ router.get("/orders", requireAuth, requireApproved, async (req, res) => {
       const tokenIds = new Set(await getIssuedTokenIds(req.dbUser.walletAddress));
       orders = orders.filter((order) => tokenIds.has(order.tokenId));
     }
-    res.json(orders);
+    res.json(orders.map(maskedView));
   } catch (err) {
     console.error("Không tải được đơn hàng của sản phẩm đã phát hành:", err);
-    res.status(500).json({ error: err.message || "Không tải được danh sách đơn hàng" });
+    res.status(500).json({ error: "Không tải được danh sách đơn hàng" });
+  }
+});
+
+/**
+ * POST /api/shop/orders/:id/reveal — xem đầy đủ thông tin người mua 1 đơn.
+ * Mỗi lần mở đều được ghi nhật ký; mở quá nhiều/giờ sẽ bị cảnh báo rồi chặn.
+ */
+router.post("/orders/:id/reveal", requireAuth, requireApproved, async (req, res) => {
+  try {
+    const order = await findAllowedOrder(req, req.params.id);
+    if (!order) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
+    const r = await revealOrder(order, req.dbUser, req);
+    if (!r.ok) return res.status(r.status).json({ error: r.error });
+    res.json(r.data);
+  } catch (err) {
+    console.error("Không mở được thông tin đơn hàng:", err);
+    res.status(500).json({ error: "Không mở được thông tin đơn hàng" });
   }
 });
 
@@ -137,23 +176,68 @@ router.patch("/orders/:id/status", requireAuth, requireApproved, async (req, res
     return res.status(400).json({ error: "Trạng thái không hợp lệ" });
   }
   try {
-    let order;
-    if (req.dbUser.role === "admin") {
-      order = await Order.findByIdAndUpdate(req.params.id, { status }, { new: true });
-    } else {
-      const tokenIds = await getIssuedTokenIds(req.dbUser.walletAddress);
-      order = await Order.findOneAndUpdate(
-        { _id: req.params.id, tokenId: { $in: tokenIds } },
-        { status },
-        { new: true }
-      );
-    }
-    if (!order) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
-    res.json(order);
+    const existing = await findAllowedOrder(req, req.params.id);
+    if (!existing) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
+    // Ghi mốc giao hàng — dùng để tính hạn xoá thông tin cá nhân
+    const update = { status, deliveredAt: status === "da_giao" ? existing.deliveredAt || new Date() : null };
+    const order = await Order.findByIdAndUpdate(existing._id, update, { new: true });
+    res.json(maskedView(order));
   } catch (err) {
     console.error("Không cập nhật được trạng thái đơn hàng:", err);
-    res.status(500).json({ error: err.message || "Không cập nhật được trạng thái đơn hàng" });
+    res.status(500).json({ error: "Không cập nhật được trạng thái đơn hàng" });
   }
+});
+
+// ---------------------------------------------------------------------
+// Đơn bẫy (canary) — CHỈ ADMIN
+// ---------------------------------------------------------------------
+
+/**
+ * POST /api/shop/canary — tạo đơn bẫy.
+ * body: { tokenId, buyerName, buyerPhone, buyerAddress, note }
+ * Dùng SỐ ĐIỆN THOẠI DO BẠN GIỮ (sim phụ): nếu số này bị gọi/nhắn tin lạ,
+ * nghĩa là dữ liệu khách hàng đã bị lộ ra ngoài. Ngoài ra, bất kỳ ai bấm
+ * "Xem đầy đủ" đơn này trong hệ thống cũng kích hoạt báo động ngay.
+ * tokenId: chọn 1 sản phẩm của nhà sản xuất muốn "giăng bẫy" → đơn bẫy
+ * hiện trong danh sách đơn của họ y như đơn thật.
+ */
+router.post("/canary", requireAuth, requireAdmin, async (req, res) => {
+  const { tokenId, buyerName, buyerPhone, buyerAddress, note, productName } = req.body || {};
+  if (tokenId === undefined || !buyerName || !buyerPhone || !buyerAddress) {
+    return res.status(400).json({ error: "Thiếu tokenId, tên, số điện thoại hoặc địa chỉ" });
+  }
+  if (!/^[0-9+\s-]{8,15}$/.test(String(buyerPhone))) {
+    return res.status(400).json({ error: "Số điện thoại không hợp lệ" });
+  }
+  const order = await Order.create({
+    tokenId: String(tokenId),
+    productName: productName || "",
+    ...protectBuyerFields({ buyerName, buyerPhone, buyerAddress, note: note || "" }),
+    isCanary: true,
+  });
+  await securityEvent({
+    type: "canary_created",
+    severity: "info",
+    message: `Tạo đơn bẫy cho sản phẩm #${tokenId}`,
+    user: req.dbUser,
+    ip: req.ip,
+    meta: { orderId: String(order._id) },
+  });
+  res.status(201).json({ ...maskedView(order), isCanary: true });
+});
+
+/** GET /api/shop/canary — danh sách đơn bẫy (để admin quản lý) */
+router.get("/canary", requireAuth, requireAdmin, async (req, res) => {
+  const list = await Order.find({ isCanary: true }).sort({ createdAt: -1 });
+  res.json(list.map((o) => ({ ...maskedView(o), isCanary: true, revealCount: o.revealCount || 0 })));
+});
+
+/** DELETE /api/shop/canary/:id — gỡ đơn bẫy */
+router.delete("/canary/:id", requireAuth, requireAdmin, async (req, res) => {
+  const o = await Order.findById(req.params.id);
+  if (!o || !o.isCanary) return res.status(404).json({ error: "Không tìm thấy đơn bẫy" });
+  await Order.deleteOne({ _id: o._id });
+  res.json({ ok: true });
 });
 
 module.exports = router;

@@ -80,7 +80,11 @@ async function getReadOnlyContract() {
   return new ethers.Contract(cfg.address, cfg.abi, provider);
 }
 
-/** Kiểm tra một địa chỉ có đang giữ vai trò MANUFACTURER/DISTRIBUTOR/ADMIN hay không */
+/**
+ * Kiểm tra một địa chỉ đang giữ những vai trò nào trên contract.
+ * isOperator / isGuardian chỉ có ở contract bản bảo mật mới — contract cũ
+ * trả về false thay vì báo lỗi.
+ */
 async function detectRoles(address) {
   const contract = await getReadOnlyContract();
   const [MANUFACTURER_ROLE, DISTRIBUTOR_ROLE, DEFAULT_ADMIN_ROLE] = await Promise.all([
@@ -88,12 +92,21 @@ async function detectRoles(address) {
     contract.DISTRIBUTOR_ROLE(),
     contract.DEFAULT_ADMIN_ROLE(),
   ]);
-  const [isManufacturer, isDistributor, isAdmin] = await Promise.all([
+  const optionalRole = async (name) => {
+    try {
+      return await contract.hasRole(await contract[name](), address);
+    } catch {
+      return false;
+    }
+  };
+  const [isManufacturer, isDistributor, isAdmin, isOperator, isGuardian] = await Promise.all([
     contract.hasRole(MANUFACTURER_ROLE, address),
     contract.hasRole(DISTRIBUTOR_ROLE, address),
     contract.hasRole(DEFAULT_ADMIN_ROLE, address),
+    optionalRole("OPERATOR_ROLE"),
+    optionalRole("GUARDIAN_ROLE"),
   ]);
-  return { isManufacturer, isDistributor, isAdmin };
+  return { isManufacturer, isDistributor, isAdmin, isOperator, isGuardian };
 }
 
 /** Lấy mã hash (bytes32) của một role — cần để gọi grantRole()/revokeRole() */
@@ -112,6 +125,15 @@ function explainContractError(err) {
   }
   if (raw.includes("user rejected") || err.code === "ACTION_REJECTED") {
     return "Bạn đã từ chối xác nhận giao dịch trong MetaMask.";
+  }
+  if (raw.includes("EnforcedPause")) {
+    return "Hệ thống đang TẠM DỪNG khẩn cấp để xử lý sự cố bảo mật — chưa thể mint/chuyển giao.";
+  }
+  if (raw.includes("Khong co quyen chuyen giao")) {
+    return "Chỉ ví đang giữ sản phẩm này mới được chuyển giao nó.";
+  }
+  if (raw.includes("Chi chuyen giao qua transferCustody")) {
+    return "Sản phẩm chỉ được chuyển qua chức năng Cập nhật chuỗi cung ứng.";
   }
   return raw;
 }
