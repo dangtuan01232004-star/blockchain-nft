@@ -1367,6 +1367,14 @@ async function loadSecurityNotices() {
       )
       .join("");
     box.hidden = false;
+    document.getElementById("noticeAckAllBtn").onclick = async () => {
+      await authFetch(`${API_BASE}/api/auth/me/security-notices/ack`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: notices.map((n) => n.id) }),
+      });
+      loadSecurityNotices();
+    };
     list.querySelectorAll(".notice-ok").forEach((b) =>
       b.addEventListener("click", async () => {
         await authFetch(`${API_BASE}/api/auth/me/security-notices/ack`, {

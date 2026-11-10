@@ -32,6 +32,7 @@ const partnersRouter = require("./routes/partners");
 const authRouter = require("./routes/auth");
 const shopRouter = require("./routes/shop");
 const telegramRouter = require("./routes/telegram");
+const { clientIpMiddleware } = require("./services/clientIp");
 const mongoose = require("mongoose");
 const { getKey } = require("./services/crypto");
 const { runOrderPrivacyMaintenance } = require("./services/orderPrivacy");
@@ -64,6 +65,9 @@ mongoose.connection.once("open", () => {
 
 const app = express();
 app.set("trust proxy", 1);
+// Lấy IP THẬT của người dùng (Render có nhiều tầng proxy — xem services/clientIp.js).
+// Phải đặt TRƯỚC mọi middleware dùng req.ip (giới hạn số lần thử, ghi nhật ký...).
+app.use(clientIpMiddleware);
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
 }));

@@ -112,6 +112,11 @@
       payload.role = document.getElementById("role").value;
     }
 
+    const submitBtn = document.getElementById("submitBtn");
+    if (submitBtn.disabled) return; // đang gửi — chặn bấm nhiều lần tạo nhiều phiên
+    const submitLabel = submitBtn.textContent;
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Đang xử lý... (máy chủ có thể mất ~1 phút để khởi động)";
     try {
       // Bước 2: đã qua mật khẩu, đang nhập mã 2FA
       const isMfaStep = mode === "login" && mfaToken;
@@ -131,7 +136,8 @@
         document.getElementById("mfaField").style.display = "block";
         document.getElementById("username").readOnly = true;
         document.getElementById("password").readOnly = true;
-        document.getElementById("submitBtn").textContent = "Xác nhận mã";
+        submitBtn.disabled = false;
+        submitBtn.textContent = "Xác nhận mã";
         document.getElementById("mfaCode").focus();
         return;
       }
@@ -140,6 +146,8 @@
       localStorage.setItem("authUser", JSON.stringify(data.user));
       window.location.href = "admin.html";
     } catch (err) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = submitLabel;
       showError(err.message);
     }
   });
