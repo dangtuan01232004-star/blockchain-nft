@@ -167,6 +167,26 @@ async function main() {
       case "WalletCleared":
         e = { type: "onchain_wallet_cleared", severity: "warning", message: `Gỡ cờ xâm phạm cho ví ${ev.args.wallet}`, wallet: ev.args.wallet };
         break;
+      case "MintAuthorizerChanged":
+        e = {
+          type: "onchain_mint_authorizer_changed",
+          severity: "critical",
+          message:
+            ev.args.newAuthorizer === "0x0000000000000000000000000000000000000000"
+              ? `MINT HAI CHỮ KÝ BỊ TẮT (khoá uỷ quyền = 0) bởi ${ev.args.changedBy} — ví nhà sản xuất bị lộ sẽ mint được tự do!`
+              : `Khoá uỷ quyền mint đổi ${ev.args.oldAuthorizer} → ${ev.args.newAuthorizer} bởi ${ev.args.changedBy}`,
+          wallet: ev.args.changedBy,
+        };
+        break;
+      case "DailyMintLimitChanged":
+        e = {
+          type: "onchain_mint_limit_changed",
+          severity: Number(ev.args.newLimit) > Number(ev.args.oldLimit) ? "critical" : "warning",
+          message: `Giới hạn mint mỗi ngày đổi từ ${ev.args.oldLimit} → ${ev.args.newLimit} sản phẩm/ví, người ký: ${ev.args.changedBy}` +
+            (Number(ev.args.newLimit) > Number(ev.args.oldLimit) ? " — NỚI LỎNG giới hạn, kiểm tra có đúng chủ trương không" : ""),
+          wallet: ev.args.changedBy,
+        };
+        break;
       case "ProductRevoked":
         e = { type: "onchain_product_revoked", severity: "warning", message: `Thu hồi xác thực sản phẩm #${ev.args.tokenId}: ${ev.args.reason}` };
         break;

@@ -65,6 +65,27 @@ async function main() {
   await grant("GUARDIAN", guardian);
   await grant("ADMIN", multisig);
 
+  // MINT HAI CHỮ KÝ: đăng ký địa chỉ khoá uỷ quyền (khoá bí mật nằm trên Render,
+  // biến MINT_AUTHORIZER_KEY). Phải đặt TRƯỚC khi ví deploy từ bỏ quyền admin.
+  const mintAuthorizer = env("MINT_AUTHORIZER_ADDRESS");
+  if (mintAuthorizer) {
+    await (await contract.setMintAuthorizer(mintAuthorizer)).wait();
+    console.log(`\nMint hai chữ ký: BẬT — khoá uỷ quyền ${mintAuthorizer}`);
+  } else if (!isLocal) {
+    console.log(
+      "\n⚠ CẢNH BÁO: chưa đặt MINT_AUTHORIZER_ADDRESS — mint hai chữ ký đang TẮT,\n" +
+        "  ví nhà sản xuất bị lộ sẽ mint được mà không cần passkey/2FA."
+    );
+  }
+
+  // Giới hạn mint mỗi ngày (mặc định trong contract: 50) — đặt TRƯỚC khi ví deploy
+  // từ bỏ quyền admin; sau đó chỉ Safe 2/3 mới đổi được.
+  const dailyLimit = Number(process.env.DAILY_MINT_LIMIT || 0);
+  if (dailyLimit > 0 && BigInt(dailyLimit) !== (await contract.dailyMintLimit())) {
+    await (await contract.setDailyMintLimit(dailyLimit)).wait();
+  }
+  console.log(`\nGiới hạn mint: ${await contract.dailyMintLimit()} sản phẩm / ngày / ví nhà sản xuất`);
+
   if (multisig) {
     // Ví deploy chỉ là "người dựng nhà" — dựng xong phải trả chìa khoá.
     // Thứ tự quan trọng: từ bỏ OPERATOR/GUARDIAN trước, ADMIN cuối cùng.
@@ -118,6 +139,42 @@ async function main() {
     JSON.stringify({ address, abi: artifact.abi }, null, 2)
   );
   console.log("\nĐã ghi địa chỉ + ABI vào backend/src/data/contract.json");
+  // ABI cho Safe Transaction Builder (dán vào ô "Enter ABI")
+  const abiDir = path.join(__dirname, "..", "abi");
+  fs.mkdirSync(abiDir, { recursive: true });
+  fs.writeFileSync(path.join(abiDir, "ProductNFT.abi.json"), JSON.stringify(artifact.abi, null, 1));
+
+  // GHIM cấu hình contract cho frontend (Vercel) — frontend chỉ ký giao dịch theo
+  // bản ghim này và đối chiếu với backend; backend bị chiếm cũng không lừa được.
+  // Mạng local đổi contract liên tục nên không ghim (frontend tự bỏ qua khi chạy localhost).
+  if (!isLocal) {
+    const net = await hre.ethers.provider.getNetwork();
+    const chainId = Number(net.chainId);
+    const names = { 11155111: "Sepolia", 1: "Ethereum Mainnet", 17000: "Holesky" };
+    // RPC công khai cho trình duyệt — KHÔNG dùng link có API key (Alchemy/Infura) vì sẽ bị lộ
+    let rpcUrl = (process.env.PUBLIC_RPC_URL || hre.network.config.url || "").trim();
+    if (/\/v[23]\/[A-Za-z0-9_-]{16,}/.test(rpcUrl) || /infura\.io\/v3\//.test(rpcUrl)) {
+      console.log("  ! RPC deploy có API key — không ghi vào frontend, dùng RPC công khai thay thế");
+      rpcUrl = chainId === 11155111 ? "https://ethereum-sepolia-rpc.publicnode.com" : "";
+    }
+    const pin = {
+      chainId,
+      chainIdHex: "0x" + chainId.toString(16),
+      chainName: names[chainId] || hre.network.name,
+      address,
+      rpcUrl,
+      deployedAt: new Date().toISOString(),
+      abi: artifact.abi,
+    };
+    const pinFile = path.join(__dirname, "..", "..", "frontend", "js", "contract-pin.js");
+    fs.writeFileSync(
+      pinFile,
+      "// TỰ SINH bởi smart-contracts/scripts/deploy.js — KHÔNG sửa tay.\n" +
+        "// Frontend chỉ ký giao dịch theo cấu hình ghim này (chống backend bị chiếm đổi ABI/địa chỉ).\n" +
+        "window.CONTRACT_PIN = " + JSON.stringify(pin, null, 1) + ";\n"
+    );
+    console.log("Đã ghim cấu hình contract vào frontend/js/contract-pin.js — nhớ push lên GitHub để Vercel cập nhật");
+  }
 }
 
 main().catch((error) => {

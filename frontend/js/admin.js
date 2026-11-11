@@ -1114,6 +1114,90 @@ document.getElementById("tHolderSelect").addEventListener("change", (e) => {
 
 // --- Phát hành sản phẩm (mint) ---
 
+/**
+ * Xin chữ ký uỷ quyền mint. Nếu máy chủ yêu cầu xác thực lại → hiện hộp
+ * passkey / mã 6 số, xác thực xong tự xin lại.
+ */
+async function requestMintAuthorization(body, retried = false) {
+  const res = await authFetch(`${API_BASE}/api/products/mint-authorization`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.ok) return data;
+  if (data.code === "STEP_UP_REQUIRED" && !retried) {
+    const ok = await stepUpDialog("Xác thực lại để phát hành sản phẩm");
+    if (!ok) throw new Error("Bạn đã huỷ xác thực — chưa phát hành.");
+    return requestMintAuthorization(body, true);
+  }
+  if (data.code === "STRONG_AUTH_REQUIRED") goToSection("account");
+  throw new Error(data.error || "Không được cấp phép phát hành");
+}
+
+/** Hộp xác thực lại: passkey (ưu tiên) hoặc mã 6 số. Trả về true nếu thành công. */
+async function stepUpDialog(title) {
+  const optRes = await authFetch(`${API_BASE}/api/auth/me/step-up/options`, { method: "POST" });
+  const opts = await optRes.json();
+  if (!optRes.ok) {
+    if (opts.code === "STRONG_AUTH_REQUIRED") goToSection("account");
+    throw new Error(opts.error || "Không xác thực lại được");
+  }
+  return new Promise((resolve) => {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "position:fixed;inset:0;z-index:99997;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:16px";
+    const box = document.createElement("div");
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
+    box.style.cssText = "background:#fff;max-width:420px;width:100%;border-radius:14px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.3)";
+    box.innerHTML = `<h3 style="margin:0 0 6px;font-size:18px"></h3>
+      <p style="margin:0 0 14px;color:#475569;font-size:14px">Mật khẩu thôi là chưa đủ. Chứng minh bạn đang cầm thiết bị của chính chủ — hiệu lực ${esc(opts.minutes)} phút.</p>
+      <div id="suPasskeyRow" hidden><button type="button" class="btn btn-primary" id="suPasskey" style="width:100%">🔑 Xác thực bằng passkey</button></div>
+      <div id="suTotpRow" hidden style="margin-top:12px">
+        <label for="suCode" style="font-size:13px;font-weight:600">Mã 6 số từ app Authenticator</label>
+        <div style="display:flex;gap:8px;margin-top:6px"><input id="suCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" style="flex:1" class="input">
+        <button type="button" class="btn btn-primary" id="suTotp">Xác nhận</button></div>
+      </div>
+      <p id="suErr" style="color:#b91c1c;font-size:13px;min-height:18px;margin:10px 0 0"></p>
+      <div style="text-align:right;margin-top:8px"><button type="button" class="btn btn-outline" id="suCancel">Huỷ</button></div>`;
+    box.querySelector("h3").textContent = title;
+    wrap.appendChild(box);
+    document.body.appendChild(wrap);
+    const err = box.querySelector("#suErr");
+    const done = (v) => { wrap.remove(); resolve(v); };
+    const submit = async (payload) => {
+      err.textContent = "Đang kiểm tra...";
+      const r = await authFetch(`${API_BASE}/api/auth/me/step-up`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) return done(true);
+      err.textContent = j.error || "Xác thực thất bại";
+    };
+    if (opts.methods.includes("passkey") && window.Passkey && Passkey.supported()) {
+      box.querySelector("#suPasskeyRow").hidden = false;
+      box.querySelector("#suPasskey").addEventListener("click", async () => {
+        try {
+          const credential = await Passkey.get(opts.passkey);
+          await submit({ credential });
+        } catch (e) {
+          err.textContent = Passkey.friendlyError(e);
+        }
+      });
+    }
+    if (opts.methods.includes("totp")) {
+      box.querySelector("#suTotpRow").hidden = false;
+      const input = box.querySelector("#suCode");
+      box.querySelector("#suTotp").addEventListener("click", () => submit({ code: input.value.trim() }));
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit({ code: input.value.trim() }); });
+      setTimeout(() => input.focus(), 50);
+    }
+    box.querySelector("#suCancel").addEventListener("click", () => done(false));
+  });
+}
+
 // --- Helper: lấy GPS + upload ảnh (dùng chung cho mint và transfer) ---
 
 function wireGpsButton(buttonId, inputId) {
@@ -1196,14 +1280,40 @@ document.getElementById("mintForm").addEventListener("submit", async (e) => {
     showStatus(statusEl, "Đang tải ảnh lên IPFS (nếu có)...", true);
     const photoURI = await uploadPhotoIfAny("mintPhoto");
 
-    showStatus(statusEl, "Vui lòng xác nhận giao dịch trong MetaMask...", true);
-    const tx = await wallet.contract.mintProduct(
-      wallet.address,
-      metaData.tokenURI,
-      payload.productCode,
-      photoURI,
-      gpsCoords
-    );
+    // Contract đã bật MINT HAI CHỮ KÝ? → xin chữ ký thứ hai (cần xác thực lại passkey/2FA)
+    const readOnly = await getReadOnlyContract();
+    let authorizer = ethers.ZeroAddress;
+    try { authorizer = await readOnly.mintAuthorizer(); } catch { /* contract cũ chưa có tính năng này */ }
+
+    let tx;
+    if (authorizer !== ethers.ZeroAddress) {
+      showStatus(statusEl, "Đang xin phép phát hành (cần xác thực lại passkey / mã 2FA)...", true);
+      const auth = await requestMintAuthorization({
+        minter: wallet.address,
+        to: wallet.address,
+        tokenURI: metaData.tokenURI,
+        productCode: payload.productCode,
+        photoURI,
+        gpsCoords,
+      });
+      if (auth.authorizer.toLowerCase() !== authorizer.toLowerCase()) {
+        throw new Error("Khoá uỷ quyền của máy chủ không khớp khoá trên contract — dừng lại, báo quản trị viên.");
+      }
+      showStatus(statusEl, "Kiểm tra nội dung rồi xác nhận trong MetaMask...", true);
+      tx = await wallet.contract.mintProductAuthorized(
+        wallet.address,
+        metaData.tokenURI,
+        payload.productCode,
+        photoURI,
+        gpsCoords,
+        auth.nonce,
+        auth.deadline,
+        auth.signature
+      );
+    } else {
+      showStatus(statusEl, "Vui lòng xác nhận giao dịch trong MetaMask...", true);
+      tx = await wallet.contract.mintProduct(wallet.address, metaData.tokenURI, payload.productCode, photoURI, gpsCoords);
+    }
     showStatus(statusEl, "Đang chờ giao dịch được xác nhận trên blockchain...", true);
     const receipt = await tx.wait();
 

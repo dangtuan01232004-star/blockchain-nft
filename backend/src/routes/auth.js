@@ -596,6 +596,90 @@ async function consumeChallenge(credential, purpose) {
   return doc;
 }
 
+// ---------------------------------------------------------------------
+// XÁC THỰC LẠI (step-up) trước thao tác nhạy cảm — hiện dùng cho phát hành NFT.
+// Mật khẩu + phiên đăng nhập là CHƯA ĐỦ: phải chứng minh lại bằng passkey
+// (thiết bị của chính chủ) hoặc mã 6 số từ app Authenticator.
+// ---------------------------------------------------------------------
+const STEP_UP_MINUTES = Number(process.env.STEP_UP_MINUTES || 5);
+
+/** POST /api/auth/me/step-up/options — cách xác thực khả dụng + thử thách passkey */
+router.post("/me/step-up/options", requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.dbUser._id);
+    const passkeys = user.passkeys || [];
+    const methods = [];
+    if (passkeys.length) methods.push("passkey");
+    if (user.twoFactorEnabled) methods.push("totp");
+    if (!methods.length) {
+      return res.status(403).json({
+        code: "STRONG_AUTH_REQUIRED",
+        error: "Tài khoản chưa bật passkey hoặc xác thực 2 lớp — vào mục Tài khoản của tôi để bật trước.",
+      });
+    }
+    const out = { methods, minutes: STEP_UP_MINUTES };
+    if (passkeys.length) {
+      out.passkey = {
+        challenge: await createChallenge("stepup", user._id),
+        rpId: webauthn.rpId(),
+        userVerification: "required",
+        timeout: CHALLENGE_TTL_MS,
+        allowCredentials: passkeys.map((p) => ({ type: "public-key", id: p.credId, transports: p.transports })),
+      };
+    }
+    res.json(out);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Không tạo được yêu cầu xác thực lại" });
+  }
+});
+
+/** POST /api/auth/me/step-up — body { code } hoặc { credential } (passkey) */
+router.post("/me/step-up", requireAuth, async (req, res) => {
+  const user = await User.findById(req.dbUser._id);
+  const { code, credential } = req.body || {};
+  try {
+    if (user.lockUntil && user.lockUntil > new Date()) return lockedResponse(user, res);
+    let method = "";
+    if (credential) {
+      const ch = await consumeChallenge(credential, "stepup");
+      if (String(ch.userId) !== String(user._id)) throw new Error("Passkey không thuộc tài khoản đang đăng nhập");
+      const stored = (user.passkeys || []).find((p) => p.credId === credential.id);
+      if (!stored) throw new Error("Passkey không còn hiệu lực");
+      const result = webauthn.verifyAuthentication(credential, ch._id, plainPasskey(stored));
+      user.passkeys = user.passkeys.map((p) => {
+        const o = plainPasskey(p);
+        return o.credId === stored.credId ? { ...o, signCount: result.signCount, lastUsedAt: new Date() } : o;
+      });
+      method = `passkey "${stored.name}"`;
+    } else {
+      if (!user.twoFactorEnabled) throw new Error("Tài khoản chưa bật mã 6 số");
+      const step = verifyTotp(decrypt(user.twoFactorSecret), String(code || ""), user.twoFactorLastStep ?? -1);
+      if (step === null) {
+        await registerFailure(user, req, "mã 2FA");
+        return res.status(401).json({ error: "Mã xác thực không đúng" });
+      }
+      user.twoFactorLastStep = step;
+      method = "mã 6 số";
+    }
+    user.failedLogins = 0;
+    await user.save();
+    const until = new Date(Date.now() + STEP_UP_MINUTES * 60 * 1000);
+    await Session.updateOne({ _id: req.authSession._id }, { stepUpUntil: until });
+    await securityEvent({ type: "step_up_ok", severity: "info", message: `Xác thực lại bằng ${method} để thao tác nhạy cảm`, user, ip: req.ip });
+    res.json({ ok: true, until });
+  } catch (err) {
+    await securityEvent({
+      type: "step_up_failed",
+      severity: "warning",
+      message: `Xác thực lại THẤT BẠI trước thao tác nhạy cảm: ${err.message}`,
+      user,
+      ip: req.ip,
+    });
+    res.status(401).json({ error: err.message || "Xác thực lại thất bại" });
+  }
+});
+
 /** Chuyển passkey (có thể là subdocument Mongoose) thành object thường */
 function plainPasskey(p) {
   return typeof p.toObject === "function" ? p.toObject() : { ...p };

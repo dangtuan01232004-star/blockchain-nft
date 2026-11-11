@@ -21,6 +21,8 @@ const sessionSchema = new mongoose.Schema(
     acknowledged: { type: Boolean, default: false },
     // Đã cảnh báo "dùng song song" cho phiên này chưa (tránh báo lặp)
     concurrentAlerted: { type: Boolean, default: false },
+    // Vừa xác thực lại (passkey / mã 2FA) — cho phép thao tác nhạy cảm như mint tới thời điểm này
+    stepUpUntil: { type: Date, default: null },
   },
   { timestamps: true, _id: false }
 );

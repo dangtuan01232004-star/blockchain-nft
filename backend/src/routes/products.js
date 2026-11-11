@@ -16,6 +16,7 @@ const {
 } = require("../services/claimCodes");
 const { recordScan, evaluateSuspicion } = require("../services/scanGuard");
 const { securityEvent } = require("../services/alerts");
+const { issueMintAuthorization } = require("../services/mintAuth");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
@@ -46,6 +47,21 @@ router.post("/photo", requireAuth, requireApproved, upload.single("photo"), asyn
     }
     console.error(err);
     res.status(500).json({ error: err.message || "Lỗi khi tải ảnh lên" });
+  }
+});
+
+/**
+ * POST /api/products/mint-authorization — xin CHỮ KÝ THỨ HAI để mint (xem services/mintAuth.js).
+ * body: { minter, to, tokenURI, productCode, photoURI, gpsCoords }
+ */
+router.post("/mint-authorization", requireAuth, requireApproved, async (req, res) => {
+  try {
+    const out = await issueMintAuthorization({ user: req.dbUser, session: req.authSession, ip: req.ip, body: req.body || {} });
+    res.json(out);
+  } catch (err) {
+    if (err && err.status) return res.status(err.status).json({ error: err.message, code: err.code });
+    console.error(err);
+    res.status(500).json({ error: "Không cấp được phép phát hành" });
   }
 });
 

@@ -4,6 +4,8 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/token/ERC721/extensions/ERC721URIStorage.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
 /**
  * @title ProductNFT
@@ -28,7 +30,7 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
  *  - Người tiêu dùng    : không cần vai trò, chỉ đọc qua verifyProduct /
  *                          securityStatus (view, miễn phí gas)
  */
-contract ProductNFT is ERC721URIStorage, AccessControl, Pausable {
+contract ProductNFT is ERC721URIStorage, AccessControl, Pausable, EIP712 {
     bytes32 public constant MANUFACTURER_ROLE = keccak256("MANUFACTURER_ROLE");
     bytes32 public constant DISTRIBUTOR_ROLE = keccak256("DISTRIBUTOR_ROLE");
     bytes32 public constant OPERATOR_ROLE = keccak256("OPERATOR_ROLE");
@@ -69,13 +71,43 @@ contract ProductNFT is ERC721URIStorage, AccessControl, Pausable {
      */
     mapping(address => uint256) public compromisedSince;
 
+    /**
+     * @notice Giới hạn số sản phẩm MỖI VÍ nhà sản xuất được mint trong 1 ngày
+     *         (ngày tính theo UTC). Ví bị lộ khoá thì kẻ tấn công cũng chỉ mint
+     *         được tối đa ngần này hàng giả "chính chủ" mỗi ngày, đủ thời gian
+     *         cho Guardian phát hiện và gắn cờ. Chỉ admin (multisig) đổi được.
+     */
+    uint256 public dailyMintLimit = 50;
+    uint256 public constant MAX_DAILY_MINT_LIMIT = 10000;
+    mapping(address => uint256) private _mintDay;
+    mapping(address => uint256) private _mintCount;
+
+    /**
+     * @notice MINT HAI CHỮ KÝ. Khi `mintAuthorizer` được đặt, mỗi lần mint phải
+     *         kèm chữ ký uỷ quyền (EIP-712) của khoá này — do hệ thống chỉ cấp
+     *         SAU KHI chính chủ xác thực lại bằng passkey / mã 2FA trên thiết bị
+     *         của họ. Kẻ trộm được private key ví nhà sản xuất (dù biết cả mật
+     *         khẩu tài khoản) vẫn KHÔNG mint được vì thiếu chữ ký thứ hai.
+     *         Chữ ký gắn chặt với: ví mint, ví nhận, metadata, mã sản phẩm, ảnh,
+     *         GPS, hạn dùng và nonce dùng-1-lần → không tái sử dụng / sửa nội dung được.
+     *         Chỉ admin (multisig) đổi được khoá này.
+     */
+    address public mintAuthorizer;
+    mapping(bytes32 => bool) public mintAuthUsed;
+    bytes32 private constant MINT_AUTH_TYPEHASH =
+        keccak256(
+            "MintAuth(address minter,address to,bytes32 tokenURIHash,bytes32 productCodeHash,bytes32 photoURIHash,bytes32 gpsHash,bytes32 nonce,uint256 deadline)"
+        );
+
     event ProductMinted(uint256 indexed tokenId, address indexed manufacturer, string productCode, string tokenURI);
     event CustodyTransferred(uint256 indexed tokenId, address indexed from, address indexed to, string action, string location);
     event ProductRevoked(uint256 indexed tokenId, string reason);
     event WalletCompromised(address indexed wallet, uint256 since, address indexed flaggedBy);
     event WalletCleared(address indexed wallet, address indexed clearedBy);
+    event DailyMintLimitChanged(uint256 oldLimit, uint256 newLimit, address indexed changedBy);
+    event MintAuthorizerChanged(address indexed oldAuthorizer, address indexed newAuthorizer, address indexed changedBy);
 
-    constructor() ERC721("ProductTraceabilityNFT", "PTNFT") {
+    constructor() ERC721("ProductTraceabilityNFT", "PTNFT") EIP712("NFTTrace", "1") {
         // Ví deploy nhận tạm cả 3 quyền quản trị để cấu hình ban đầu. Khi
         // triển khai thật, scripts/deploy.js sẽ chuyển DEFAULT_ADMIN_ROLE
         // sang ví multisig rồi tự từ bỏ quyền của ví deploy.
@@ -109,6 +141,56 @@ contract ProductNFT is ERC721URIStorage, AccessControl, Pausable {
         string memory photoURI_,
         string memory gpsCoords_
     ) external onlyRole(MANUFACTURER_ROLE) whenNotPaused returns (uint256) {
+        // Hệ thống đã bật mint hai chữ ký → bắt buộc dùng mintProductAuthorized
+        require(mintAuthorizer == address(0), "Can chu ky uy quyen mint");
+        return _mintProduct(to, tokenURI_, productCode_, photoURI_, gpsCoords_);
+    }
+
+    /**
+     * @notice Mint có chữ ký uỷ quyền thứ hai (xem `mintAuthorizer`).
+     * @param nonce    Mã ngẫu nhiên dùng 1 lần do hệ thống cấp
+     * @param deadline Hạn dùng chữ ký (unix giây), thường 10 phút
+     * @param authSig  Chữ ký EIP-712 của `mintAuthorizer`
+     */
+    function mintProductAuthorized(
+        address to,
+        string memory tokenURI_,
+        string memory productCode_,
+        string memory photoURI_,
+        string memory gpsCoords_,
+        bytes32 nonce,
+        uint256 deadline,
+        bytes calldata authSig
+    ) external onlyRole(MANUFACTURER_ROLE) whenNotPaused returns (uint256) {
+        require(mintAuthorizer != address(0), "Chua cau hinh khoa uy quyen");
+        require(block.timestamp <= deadline, "Chu ky uy quyen het han");
+        require(!mintAuthUsed[nonce], "Chu ky uy quyen da dung");
+        bytes32 structHash = keccak256(
+            abi.encode(
+                MINT_AUTH_TYPEHASH,
+                msg.sender,
+                to,
+                keccak256(bytes(tokenURI_)),
+                keccak256(bytes(productCode_)),
+                keccak256(bytes(photoURI_)),
+                keccak256(bytes(gpsCoords_)),
+                nonce,
+                deadline
+            )
+        );
+        require(ECDSA.recover(_hashTypedDataV4(structHash), authSig) == mintAuthorizer, "Chu ky uy quyen khong hop le");
+        mintAuthUsed[nonce] = true;
+        return _mintProduct(to, tokenURI_, productCode_, photoURI_, gpsCoords_);
+    }
+
+    function _mintProduct(
+        address to,
+        string memory tokenURI_,
+        string memory productCode_,
+        string memory photoURI_,
+        string memory gpsCoords_
+    ) private returns (uint256) {
+        _useDailyMintQuota(msg.sender);
         uint256 tokenId = _nextTokenId;
         _nextTokenId++;
 
@@ -241,6 +323,34 @@ contract ProductNFT is ERC721URIStorage, AccessControl, Pausable {
         require(compromisedSince[wallet] != 0, "Vi chua bi gan co");
         compromisedSince[wallet] = 0;
         emit WalletCleared(wallet, msg.sender);
+    }
+
+    /// @notice Đổi giới hạn mint mỗi ngày — chỉ admin (multisig 2/3)
+    function setDailyMintLimit(uint256 newLimit) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(newLimit > 0 && newLimit <= MAX_DAILY_MINT_LIMIT, "Gioi han khong hop le");
+        emit DailyMintLimitChanged(dailyMintLimit, newLimit, msg.sender);
+        dailyMintLimit = newLimit;
+    }
+
+    /// @notice Đặt / đổi khoá uỷ quyền mint (bật mint hai chữ ký) — chỉ admin (multisig)
+    function setMintAuthorizer(address newAuthorizer) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        emit MintAuthorizerChanged(mintAuthorizer, newAuthorizer, msg.sender);
+        mintAuthorizer = newAuthorizer;
+    }
+
+    /// @notice Số sản phẩm một ví đã mint trong ngày hôm nay (UTC)
+    function mintedToday(address wallet) public view returns (uint256) {
+        return _mintDay[wallet] == block.timestamp / 1 days ? _mintCount[wallet] : 0;
+    }
+
+    function _useDailyMintQuota(address wallet) private {
+        uint256 today = block.timestamp / 1 days;
+        if (_mintDay[wallet] != today) {
+            _mintDay[wallet] = today;
+            _mintCount[wallet] = 0;
+        }
+        require(_mintCount[wallet] < dailyMintLimit, "Vuot gioi han mint trong ngay");
+        _mintCount[wallet] += 1;
     }
 
     // ------------------------------------------------------------------

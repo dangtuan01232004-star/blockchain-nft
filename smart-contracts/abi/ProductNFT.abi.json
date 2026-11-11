@@ -26,6 +26,33 @@
   "type": "error"
  },
  {
+  "inputs": [],
+  "name": "ECDSAInvalidSignature",
+  "type": "error"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "uint256",
+    "name": "length",
+    "type": "uint256"
+   }
+  ],
+  "name": "ECDSAInvalidSignatureLength",
+  "type": "error"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "bytes32",
+    "name": "s",
+    "type": "bytes32"
+   }
+  ],
+  "name": "ECDSAInvalidSignatureS",
+  "type": "error"
+ },
+ {
   "inputs": [
    {
     "internalType": "address",
@@ -136,6 +163,22 @@
  {
   "inputs": [],
   "name": "ExpectedPause",
+  "type": "error"
+ },
+ {
+  "inputs": [],
+  "name": "InvalidShortString",
+  "type": "error"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "string",
+    "name": "str",
+    "type": "string"
+   }
+  ],
+  "name": "StringTooLong",
   "type": "error"
  },
  {
@@ -250,11 +293,67 @@
    {
     "indexed": false,
     "internalType": "uint256",
+    "name": "oldLimit",
+    "type": "uint256"
+   },
+   {
+    "indexed": false,
+    "internalType": "uint256",
+    "name": "newLimit",
+    "type": "uint256"
+   },
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "changedBy",
+    "type": "address"
+   }
+  ],
+  "name": "DailyMintLimitChanged",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [],
+  "name": "EIP712DomainChanged",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": false,
+    "internalType": "uint256",
     "name": "_tokenId",
     "type": "uint256"
    }
   ],
   "name": "MetadataUpdate",
+  "type": "event"
+ },
+ {
+  "anonymous": false,
+  "inputs": [
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "oldAuthorizer",
+    "type": "address"
+   },
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "newAuthorizer",
+    "type": "address"
+   },
+   {
+    "indexed": true,
+    "internalType": "address",
+    "name": "changedBy",
+    "type": "address"
+   }
+  ],
+  "name": "MintAuthorizerChanged",
   "type": "event"
  },
  {
@@ -531,6 +630,19 @@
  },
  {
   "inputs": [],
+  "name": "MAX_DAILY_MINT_LIMIT",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
   "name": "OPERATOR_ROLE",
   "outputs": [
    {
@@ -606,6 +718,62 @@
     "internalType": "uint256",
     "name": "",
     "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "dailyMintLimit",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "eip712Domain",
+  "outputs": [
+   {
+    "internalType": "bytes1",
+    "name": "fields",
+    "type": "bytes1"
+   },
+   {
+    "internalType": "string",
+    "name": "name",
+    "type": "string"
+   },
+   {
+    "internalType": "string",
+    "name": "version",
+    "type": "string"
+   },
+   {
+    "internalType": "uint256",
+    "name": "chainId",
+    "type": "uint256"
+   },
+   {
+    "internalType": "address",
+    "name": "verifyingContract",
+    "type": "address"
+   },
+   {
+    "internalType": "bytes32",
+    "name": "salt",
+    "type": "bytes32"
+   },
+   {
+    "internalType": "uint256[]",
+    "name": "extensions",
+    "type": "uint256[]"
    }
   ],
   "stateMutability": "view",
@@ -811,6 +979,38 @@
  {
   "inputs": [
    {
+    "internalType": "bytes32",
+    "name": "",
+    "type": "bytes32"
+   }
+  ],
+  "name": "mintAuthUsed",
+  "outputs": [
+   {
+    "internalType": "bool",
+    "name": "",
+    "type": "bool"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [],
+  "name": "mintAuthorizer",
+  "outputs": [
+   {
+    "internalType": "address",
+    "name": "",
+    "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
     "internalType": "address",
     "name": "to",
     "type": "address"
@@ -850,6 +1050,60 @@
  {
   "inputs": [
    {
+    "internalType": "address",
+    "name": "to",
+    "type": "address"
+   },
+   {
+    "internalType": "string",
+    "name": "tokenURI_",
+    "type": "string"
+   },
+   {
+    "internalType": "string",
+    "name": "productCode_",
+    "type": "string"
+   },
+   {
+    "internalType": "string",
+    "name": "photoURI_",
+    "type": "string"
+   },
+   {
+    "internalType": "string",
+    "name": "gpsCoords_",
+    "type": "string"
+   },
+   {
+    "internalType": "bytes32",
+    "name": "nonce",
+    "type": "bytes32"
+   },
+   {
+    "internalType": "uint256",
+    "name": "deadline",
+    "type": "uint256"
+   },
+   {
+    "internalType": "bytes",
+    "name": "authSig",
+    "type": "bytes"
+   }
+  ],
+  "name": "mintProductAuthorized",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
+   }
+  ],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
     "internalType": "uint256",
     "name": "",
     "type": "uint256"
@@ -861,6 +1115,25 @@
     "internalType": "address",
     "name": "",
     "type": "address"
+   }
+  ],
+  "stateMutability": "view",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "wallet",
+    "type": "address"
+   }
+  ],
+  "name": "mintedToday",
+  "outputs": [
+   {
+    "internalType": "uint256",
+    "name": "",
+    "type": "uint256"
    }
   ],
   "stateMutability": "view",
@@ -1090,6 +1363,32 @@
    }
   ],
   "name": "setApprovalForAll",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "uint256",
+    "name": "newLimit",
+    "type": "uint256"
+   }
+  ],
+  "name": "setDailyMintLimit",
+  "outputs": [],
+  "stateMutability": "nonpayable",
+  "type": "function"
+ },
+ {
+  "inputs": [
+   {
+    "internalType": "address",
+    "name": "newAuthorizer",
+    "type": "address"
+   }
+  ],
+  "name": "setMintAuthorizer",
   "outputs": [],
   "stateMutability": "nonpayable",
   "type": "function"

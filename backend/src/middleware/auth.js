@@ -38,7 +38,7 @@ async function requireAuth(req, res, next) {
 
   try {
     const user = await User.findById(payload.id).select(
-      "username displayName role roleStatus walletAddress tokenVersion disabled twoFactorEnabled passkeys"
+      "username displayName role roleStatus walletAddress walletVerifiedAt telegramChatId tokenVersion disabled twoFactorEnabled passkeys"
     );
     if (!user || user.disabled || (payload.tv ?? 0) !== (user.tokenVersion ?? 0)) {
       return res.status(401).json({ error: "Phiên đăng nhập không còn hiệu lực — vui lòng đăng nhập lại." });
