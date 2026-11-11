@@ -34,6 +34,7 @@ const authRouter = require("./routes/auth");
 const shopRouter = require("./routes/shop");
 const telegramRouter = require("./routes/telegram");
 const { clientIpMiddleware } = require("./services/clientIp");
+const { probeDetectMiddleware } = require("./services/probeDetect");
 const { reportRateLimited, reportApiFlood } = require("./services/loginGuard");
 const { ipBlockMiddleware } = require("./services/ipBlock");
 const mongoose = require("mongoose");
@@ -191,6 +192,7 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: "5mb" }));
+app.use("/api", probeDetectMiddleware);
 
 // "IPFS gateway" cục bộ cho metadata NFT
 app.get("/metadata/:tokenId", (req, res) => {
