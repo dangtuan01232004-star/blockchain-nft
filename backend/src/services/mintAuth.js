@@ -15,11 +15,16 @@
 const crypto = require("crypto");
 const { ethers } = require("ethers");
 const AuditLog = require("../models/AuditLog");
+const MintApproval = require("../models/MintApproval");
 const { getReadOnlyContract, loadContractInfo, provider } = require("./blockchain");
 const { securityEvent, sendTelegram } = require("./alerts");
 const { signMintAuth } = require("./mintAuthSign");
 
 const VALID_MINUTES = 10;
+const APPROVAL_MINUTES = 5;
+// "new_device" (mặc định): chỉ hỏi Telegram khi phiên đăng nhập từ IP/thiết bị lạ.
+// "always": hỏi MỌI lần phát hành (dùng khi demo). "off": tắt.
+const approvalMode = () => (process.env.MINT_TELEGRAM_APPROVAL || "new_device").toLowerCase();
 const BURST_WINDOW_MIN = 10;
 const BURST_MAX = Number(process.env.MINT_AUTH_BURST_MAX || 10);
 
@@ -130,6 +135,84 @@ async function issueMintAuthorization({ user, session, ip, body }) {
     throw new MintAuthError(429, `Phát hành quá nhiều trong ${BURST_WINDOW_MIN} phút — tạm chặn để kiểm tra. Liên hệ quản trị viên nếu là thao tác thật.`);
   }
 
+  // ---- Duyệt qua Telegram khi phát hành từ thiết bị lạ (push MFA) ----
+  const mode = approvalMode();
+  const needApproval = mode === "always" || (mode !== "off" && session.newIp);
+  if (needApproval) {
+    const payloadHash = crypto
+      .createHash("sha256")
+      .update(JSON.stringify([minter, to, p.tokenURI, p.productCode, p.photoURI, p.gps]))
+      .digest("hex");
+    if (!user.telegramChatId) {
+      await securityEvent({
+        type: "mint_new_device_no_telegram",
+        severity: "warning",
+        message: "Xin phát hành từ thiết bị/IP LẠ nhưng tài khoản chưa liên kết Telegram để duyệt — đã chặn",
+        user,
+        wallet: minter,
+        ip,
+      });
+      throw new MintAuthError(
+        403,
+        "Bạn đang phát hành từ thiết bị/mạng lạ. Cần liên kết Telegram (Tài khoản của tôi) để duyệt, hoặc phát hành từ thiết bị quen.",
+        "TELEGRAM_REQUIRED"
+      );
+    }
+    const approvalId = String(body.approvalId || "");
+    const ap = approvalId ? await MintApproval.findById(approvalId) : null;
+    const valid =
+      ap &&
+      String(ap.userId) === String(user._id) &&
+      ap.sessionId === String(session._id) &&
+      ap.payloadHash === payloadHash &&
+      new Date(ap.expiresAt) > new Date();
+    if (valid && ap.status === "denied") {
+      throw new MintAuthError(403, "Chủ tài khoản đã TỪ CHỐI yêu cầu phát hành này trên Telegram.", "TELEGRAM_DENIED");
+    }
+    if (!valid || ap.status !== "approved") {
+      if (valid && ap.status === "pending") {
+        throw new MintAuthError(202, "Đang chờ duyệt trên Telegram…", "TELEGRAM_APPROVAL_PENDING");
+      }
+      const id = crypto.randomBytes(12).toString("hex");
+      await MintApproval.create({
+        _id: id,
+        userId: user._id,
+        sessionId: String(session._id),
+        payloadHash,
+        productCode: p.productCode,
+        ip,
+        expiresAt: new Date(Date.now() + APPROVAL_MINUTES * 60 * 1000),
+      });
+      await sendTelegram(
+        `🏭 YÊU CẦU PHÁT HÀNH SẢN PHẨM — tài khoản "${user.username}"\n` +
+          `Sản phẩm: ${p.productCode}\nVí: …${minter.slice(-4)}\nIP: ${ip} (thiết bị/mạng LẠ)\n\n` +
+          `Đây có phải bạn không? Yêu cầu hết hạn sau ${APPROVAL_MINUTES} phút.`,
+        {
+          chatId: user.telegramChatId,
+          buttons: [[
+            { text: "✅ Cho phép", callback_data: `mintok:${id}` },
+            { text: "🚫 Từ chối & đăng xuất", callback_data: `mintno:${id}` },
+          ]],
+        }
+      );
+      await securityEvent({
+        type: "mint_approval_requested",
+        severity: "info",
+        message: `Phát hành ${p.productCode} từ thiết bị/IP lạ — đã gửi yêu cầu duyệt tới Telegram chủ tài khoản`,
+        user,
+        wallet: minter,
+        ip,
+      });
+      const e = new MintAuthError(202, "Đã gửi yêu cầu duyệt tới Telegram của bạn — mở Telegram và bấm \"Cho phép\".", "TELEGRAM_APPROVAL_REQUIRED");
+      e.approvalId = id;
+      e.minutes = APPROVAL_MINUTES;
+      throw e;
+    }
+    // Đã duyệt → dùng đúng 1 lần
+    const used = await MintApproval.findOneAndUpdate({ _id: ap._id, status: "approved" }, { status: "used" });
+    if (!used) throw new MintAuthError(409, "Yêu cầu duyệt này đã được dùng — thử phát hành lại.");
+  }
+
   const nonce = "0x" + crypto.randomBytes(32).toString("hex");
   const deadline = Math.floor(Date.now() / 1000) + VALID_MINUTES * 60;
   const { address } = loadContractInfo();
@@ -163,4 +246,12 @@ async function issueMintAuthorization({ user, session, ip, body }) {
   return { nonce, deadline, signature, authorizer: signer.address };
 }
 
-module.exports = { issueMintAuthorization, MintAuthError, authorizerWallet };
+/** Trạng thái 1 yêu cầu duyệt (frontend hỏi định kỳ) */
+async function getApprovalStatus(user, session, id) {
+  const ap = await MintApproval.findById(String(id || ""));
+  if (!ap || String(ap.userId) !== String(user._id) || ap.sessionId !== String(session._id)) return { status: "not_found" };
+  if (ap.status === "pending" && new Date(ap.expiresAt) < new Date()) return { status: "expired" };
+  return { status: ap.status };
+}
+
+module.exports = { issueMintAuthorization, getApprovalStatus, MintAuthError, authorizerWallet };

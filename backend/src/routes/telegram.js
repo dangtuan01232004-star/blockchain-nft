@@ -4,6 +4,8 @@ const User = require("../models/User");
 const Session = require("../models/Session");
 const { reportNotMe } = require("../services/sessions");
 const { securityEvent } = require("../services/alerts");
+const MintApproval = require("../models/MintApproval");
+const { revokeSession } = require("../services/sessions");
 
 /**
  * Webhook Telegram — Telegram gọi vào đây khi:
@@ -95,8 +97,58 @@ router.post("/webhook", async (req, res) => {
       return;
     }
 
-    // 2. Nút "Không phải tôi"
     const cb = update.callback_query;
+
+    // 3. Duyệt phát hành từ thiết bị lạ: "Cho phép" / "Từ chối"
+    if (cb && typeof cb.data === "string" && /^mint(ok|no):/.test(cb.data)) {
+      const approve = cb.data.startsWith("mintok:");
+      const id = cb.data.slice(7);
+      const chatId = String((cb.message && cb.message.chat && cb.message.chat.id) || (cb.from && cb.from.id));
+      const ap = await MintApproval.findById(id);
+      const user = ap ? await User.findById(ap.userId) : null;
+      if (!user || user.telegramChatId !== chatId) {
+        await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Không xác minh được tài khoản.", show_alert: true });
+        return;
+      }
+      if (ap.status !== "pending" || new Date(ap.expiresAt) < new Date()) {
+        await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Yêu cầu đã được xử lý hoặc đã hết hạn.", show_alert: true });
+        return;
+      }
+      await MintApproval.updateOne({ _id: id, status: "pending" }, { status: approve ? "approved" : "denied", decidedAt: new Date() });
+      if (approve) {
+        await securityEvent({
+          type: "mint_approved_telegram",
+          severity: "info",
+          message: `Chủ tài khoản CHO PHÉP phát hành ${ap.productCode} qua Telegram`,
+          user,
+          ip: ap.ip,
+        });
+        await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Đã cho phép phát hành." });
+        await tg("sendMessage", { chat_id: chatId, text: `✅ Đã cho phép phát hành ${ap.productCode}.` });
+      } else {
+        await revokeSession(ap.sessionId, "telegram_denied").catch(() => {});
+        await securityEvent({
+          type: "mint_denied_telegram",
+          severity: "critical",
+          message:
+            `Chủ tài khoản TỪ CHỐI yêu cầu phát hành ${ap.productCode} từ IP ${ap.ip} trên Telegram — đã đăng xuất thiết bị đó. ` +
+            "Nghi tài khoản + ví nhà sản xuất bị chiếm: cân nhắc khoá tài khoản và gắn cờ ví.",
+          user,
+          ip: ap.ip,
+        });
+        await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Đã từ chối và đăng xuất thiết bị đó." });
+        await tg("sendMessage", {
+          chat_id: chatId,
+          text:
+            `🚫 Đã TỪ CHỐI phát hành ${ap.productCode} và đăng xuất thiết bị lạ (IP ${ap.ip}). Quản trị viên đã được báo.\n` +
+            "Nên đổi mật khẩu ngay. Nếu nghi lộ cả ví MetaMask, báo quản trị viên để khoá ví trên blockchain.",
+          reply_markup: { inline_keyboard: [[{ text: "🔒 Khoá luôn tài khoản", callback_data: `notme:${ap.sessionId}` }]] },
+        });
+      }
+      return;
+    }
+
+    // 2. Nút "Không phải tôi"
     if (cb && typeof cb.data === "string" && cb.data.startsWith("notme:")) {
       const sid = cb.data.slice("notme:".length);
       const chatId = String((cb.message && cb.message.chat && cb.message.chat.id) || (cb.from && cb.from.id));

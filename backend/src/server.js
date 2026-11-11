@@ -34,9 +34,9 @@ const authRouter = require("./routes/auth");
 const shopRouter = require("./routes/shop");
 const telegramRouter = require("./routes/telegram");
 const { clientIpMiddleware } = require("./services/clientIp");
-const { probeDetectMiddleware } = require("./services/probeDetect");
 const { reportRateLimited, reportApiFlood } = require("./services/loginGuard");
 const { ipBlockMiddleware } = require("./services/ipBlock");
+const { probeDetectMiddleware } = require("./services/probeDetect");
 const mongoose = require("mongoose");
 const { getKey } = require("./services/crypto");
 const { runOrderPrivacyMaintenance } = require("./services/orderPrivacy");
@@ -192,6 +192,7 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: "5mb" }));
+// Phát hiện kẻ đang DÒ LỖ HỔNG (XSS / SQLi / NoSQL / ../ / công cụ quét) → chặn + báo động + tự chặn IP
 app.use("/api", probeDetectMiddleware);
 
 // "IPFS gateway" cục bộ cho metadata NFT

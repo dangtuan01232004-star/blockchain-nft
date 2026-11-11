@@ -31,8 +31,8 @@ npx hardhat test
 Phải ra **52 passing**: thêm AUTH-01→10 cho mint hai chữ ký và LIM-01→06 cho giới hạn mint.
 (Test AUTH dùng thư viện trong `backend/node_modules`; nếu báo thiếu module thì chạy `npm install` trong `backend`.)
 
-## Bước 2 — Bật passkey hoặc 2FA cho tài khoản nhà sản xuất
-Đăng nhập `aaaa` → **Tài khoản của tôi** → bật **passkey** (khuyên dùng) hoặc **xác thực 2 lớp**. Chưa bật thì sẽ **không phát hành được**.
+## Bước 2 — Bật passkey hoặc 2FA + liên kết Telegram cho tài khoản nhà sản xuất
+Đăng nhập `aaaa` → **Tài khoản của tôi** → bật **passkey** (khuyên dùng) hoặc **xác thực 2 lớp**, và **Liên kết Telegram**. Chưa bật passkey/2FA thì **không phát hành được**; chưa liên kết Telegram thì **không phát hành được từ thiết bị lạ**.
 
 ## Bước 3 — Tạo khoá uỷ quyền mint
 Trong Git Bash, ở thư mục `backend`:
@@ -92,6 +92,19 @@ git push
 - Tự động chặn **1 giờ** những IP: dò mật khẩu nhiều tài khoản, thử đăng nhập quá nhiều, gọi API dồn dập, xin phép mint dồn dập. Admin nhận Telegram.
 - Trang admin → **Bảo mật & khẩn cấp** → khung **IP đang bị chặn**: chặn tay (1 giờ / 24 giờ / 7 ngày), **Bỏ chặn**. Mỗi dòng nhật ký có IP đều có nút **🚫 Chặn IP**.
 - **Nên đặt trên Render:** `IP_ALLOWLIST=<IP của bạn>` để không bao giờ tự chặn nhầm mình. Xem IP của bạn ở trang *Tài khoản của tôi → Phiên đăng nhập*.
+
+**Duyệt phát hành qua Telegram khi dùng thiết bị lạ (giống push MFA ngân hàng)**
+- Tài khoản nhà sản xuất đăng nhập từ **IP/thiết bị lạ** → sau bước passkey/2FA, hệ thống **chưa cấp chữ ký** mà gửi Telegram cho chủ tài khoản: *"YÊU CẦU PHÁT HÀNH SẢN PHẨM…"* với 2 nút **✅ Cho phép** / **🚫 Từ chối & đăng xuất**. Trang web hiện hộp *"Duyệt trên Telegram"* và tự chờ.
+- **Cho phép** → phát hành tiếp. **Từ chối** → thiết bị lạ bị **đăng xuất ngay**, admin nhận cảnh báo **NGHIÊM TRỌNG**, có thêm nút khoá luôn tài khoản.
+- Mỗi lần duyệt chỉ dùng **1 lần**, đúng **1 sản phẩm**, hết hạn sau **5 phút**. Chỉ Telegram đã liên kết mới bấm được.
+- Thiết bị lạ mà tài khoản **chưa liên kết Telegram** → **không phát hành được**.
+- **Cần làm:** tài khoản `aaaa` phải **liên kết Telegram** (Tài khoản của tôi → Liên kết Telegram).
+- **Demo:** trên Render đặt `MINT_TELEGRAM_APPROVAL=always` để lần phát hành nào cũng hỏi Telegram; demo xong đổi lại `new_device`. Hoặc đăng nhập `aaaa` trên điện thoại bằng 4G (IP lạ).
+
+**Phát hiện dò lỗ hổng (XSS / SQL injection / NoSQL / ../ / công cụ quét)**
+- Request chứa payload tấn công bị **chặn (400)**, ghi nhật ký kèm mẫu payload, **admin nhận Telegram** *"IP … đang DÒ LỖ HỔNG"* (tối đa 1 tin / IP / 15 phút). Dò từ **3 lần** trong 10 phút thì **IP bị tự chặn 1 giờ**.
+- **Demo:** mở trang **Mua hàng**, gõ `<script>alert(1)</script>` vào ô tìm kiếm rồi Enter → trang báo *"Yêu cầu chứa nội dung có dấu hiệu tấn công…"*, điện thoại admin rung. Thử thêm `' OR '1'='1` và `../../etc/passwd` → lần thứ 3 IP bị chặn, vào khung **IP đang bị chặn** bấm **Bỏ chặn**.
+- ⚠ Demo bằng **mạng 4G của điện thoại** hoặc **bỏ chặn ngay sau đó**, nếu không chính máy bạn bị chặn 1 giờ. Hoặc đặt `IP_ALLOWLIST` — khi đó IP của bạn vẫn bị cảnh báo nhưng không bị chặn.
 
 **Đổi Telegram an toàn hơn**
 - **Đổi hoặc gỡ** Telegram đã liên kết giờ phải **xác thực lại bằng passkey / mã 2FA**. Lần liên kết đầu tiên thì không cần.

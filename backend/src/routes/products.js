@@ -16,7 +16,7 @@ const {
 } = require("../services/claimCodes");
 const { recordScan, evaluateSuspicion } = require("../services/scanGuard");
 const { securityEvent } = require("../services/alerts");
-const { issueMintAuthorization } = require("../services/mintAuth");
+const { issueMintAuthorization, getApprovalStatus } = require("../services/mintAuth");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
@@ -59,10 +59,17 @@ router.post("/mint-authorization", requireAuth, requireApproved, async (req, res
     const out = await issueMintAuthorization({ user: req.dbUser, session: req.authSession, ip: req.ip, body: req.body || {} });
     res.json(out);
   } catch (err) {
-    if (err && err.status) return res.status(err.status).json({ error: err.message, code: err.code });
+    if (err && err.status) {
+      return res.status(err.status).json({ error: err.message, code: err.code, approvalId: err.approvalId, minutes: err.minutes });
+    }
     console.error(err);
     res.status(500).json({ error: "Không cấp được phép phát hành" });
   }
+});
+
+/** GET /api/products/mint-approval/:id — trạng thái duyệt trên Telegram (trang hỏi định kỳ) */
+router.get("/mint-approval/:id", requireAuth, requireApproved, async (req, res) => {
+  res.json(await getApprovalStatus(req.dbUser, req.authSession, req.params.id));
 });
 
 /**

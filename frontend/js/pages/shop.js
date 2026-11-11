@@ -92,6 +92,10 @@ async function doSearch() {
   try {
     const res = await fetch(`${API_BASE}/api/shop/search?q=${encodeURIComponent(q)}`);
     const list = await res.json();
+    if (!res.ok) {
+      document.getElementById("shopHint").textContent = list.error || "Lỗi khi tìm kiếm.";
+      return;
+    }
     renderGrid(list);
   } catch {
     document.getElementById("shopHint").textContent = "Lỗi khi tìm kiếm.";

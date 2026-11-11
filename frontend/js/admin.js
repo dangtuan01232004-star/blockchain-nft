@@ -1196,7 +1196,13 @@ async function requestMintAuthorization(body, retried = false) {
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (res.ok) return data;
+  if (data.code === "TELEGRAM_APPROVAL_REQUIRED" && data.approvalId) {
+    // Thiết bị/mạng lạ → chờ chủ tài khoản bấm "Cho phép" trên Telegram
+    await waitTelegramApproval(data.approvalId, data.minutes || 5);
+    return requestMintAuthorization({ ...body, approvalId: data.approvalId }, retried);
+  }
+  if (data.code === "TELEGRAM_REQUIRED") goToSection("account");
+  if (res.ok && data.signature) return data;
   if (data.code === "STEP_UP_REQUIRED" && !retried) {
     const ok = await stepUpDialog("Xác thực lại để phát hành sản phẩm");
     if (!ok) throw new Error("Bạn đã huỷ xác thực — chưa phát hành.");
@@ -1204,6 +1210,47 @@ async function requestMintAuthorization(body, retried = false) {
   }
   if (data.code === "STRONG_AUTH_REQUIRED") goToSection("account");
   throw new Error(data.error || "Không được cấp phép phát hành");
+}
+
+/** Hộp "Đang chờ duyệt trên Telegram" — hỏi máy chủ mỗi 2 giây tới khi Cho phép / Từ chối / hết hạn */
+function waitTelegramApproval(id, minutes) {
+  return new Promise((resolve, reject) => {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "position:fixed;inset:0;z-index:99997;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:16px";
+    const box = document.createElement("div");
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-modal", "true");
+    box.style.cssText = "background:#fff;max-width:420px;width:100%;border-radius:14px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.3);text-align:center";
+    box.innerHTML = `<div style="font-size:40px;line-height:1">📲</div>
+      <h3 style="margin:8px 0 6px;font-size:18px">Duyệt trên Telegram</h3>
+      <p style="margin:0 0 10px;color:#475569;font-size:14px">Bạn đang phát hành từ <b>thiết bị / mạng lạ</b>. Mở Telegram và bấm <b>✅ Cho phép</b> trong tin nhắn vừa gửi.</p>
+      <p id="tgWaitLeft" style="margin:0 0 14px;font-size:13px;color:#64748b"></p>
+      <button type="button" class="btn btn-outline" id="tgWaitCancel">Huỷ</button>`;
+    wrap.appendChild(box);
+    document.body.appendChild(wrap);
+    const deadline = Date.now() + minutes * 60 * 1000;
+    let stopped = false;
+    const finish = (fn, v) => { stopped = true; clearInterval(timer); wrap.remove(); fn(v); };
+    box.querySelector("#tgWaitCancel").addEventListener("click", () => finish(reject, new Error("Đã huỷ — chưa phát hành.")));
+    const tick = async () => {
+      if (stopped) return;
+      const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
+      box.querySelector("#tgWaitLeft").textContent = `Đang chờ… còn ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+      try {
+        const r = await authFetch(`${API_BASE}/api/products/mint-approval/${encodeURIComponent(id)}`);
+        const j = await r.json();
+        if (j.status === "approved") return finish(resolve);
+        if (j.status === "denied") return finish(reject, new Error("Yêu cầu phát hành đã bị TỪ CHỐI trên Telegram."));
+        if (j.status === "expired" || j.status === "not_found" || left === 0) {
+          return finish(reject, new Error("Hết thời gian chờ duyệt trên Telegram — thử phát hành lại."));
+        }
+      } catch {
+        /* phiên bị thu hồi (bấm Từ chối) → authFetch đã chuyển về trang đăng nhập */
+      }
+    };
+    const timer = setInterval(tick, 2000);
+    tick();
+  });
 }
 
 /** Hộp xác thực lại: passkey (ưu tiên) hoặc mã 6 số. Trả về true nếu thành công. */
