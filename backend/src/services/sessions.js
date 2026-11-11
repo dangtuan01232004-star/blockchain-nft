@@ -77,12 +77,22 @@ async function notifyNewLogin(user, session) {
       buttons: [[{ text: "🚫 Không phải tôi — khoá tài khoản", callback_data: `notme:${session._id}` }]],
     });
   }
+  // Mọi tài khoản trong hệ thống (admin / nhà sản xuất / nhà phân phối) đều gắn
+  // với ví có quyền on-chain → IP mới là dấu hiệu chiếm tài khoản cần admin biết.
+  const ROLE_LABEL = { admin: "ADMIN", manufacturer: "nhà sản xuất", distributor: "nhà phân phối" };
+  const roleLabel = ROLE_LABEL[user.role] || user.role || "tài khoản";
+  const ownerInformed = user.telegramChatId
+    ? "đã báo chủ tài khoản qua Telegram"
+    : "chủ tài khoản CHƯA liên kết Telegram — nên liên hệ trực tiếp để xác minh";
   await securityEvent({
     type: "login_new_ip",
-    severity: user.role === "admin" ? "warning" : "info",
-    message: `Đăng nhập từ IP mới (${shortUA(session.userAgent)})${user.telegramChatId ? " — đã báo chủ tài khoản qua Telegram" : ""}`,
+    severity: "warning",
+    message: `Tài khoản ${roleLabel} đăng nhập từ IP mới (${shortUA(session.userAgent)}) — ${ownerInformed}`,
     user,
     ip: session.ip,
+    meta: { sessionId: session._id, role: user.role },
+    // Chủ tài khoản chính là người nhận kênh admin → khỏi gửi trùng 2 tin
+    skipTelegram: Boolean(user.telegramChatId) && user.telegramChatId === process.env.TELEGRAM_CHAT_ID,
   });
 }
 

@@ -62,6 +62,7 @@ async function sendTelegram(text, { chatId, buttons } = {}) {
  * @param {string} [e.txHash]
  * @param {string} [e.dedupeKey] bỏ qua nếu đã ghi sự kiện cùng khoá
  * @param {object} [e.meta]
+ * @param {boolean} [e.skipTelegram] chỉ ghi nhật ký, không gửi Telegram cho admin
  * @returns {Promise<boolean>} false nếu là bản trùng
  */
 async function securityEvent(e) {
@@ -91,7 +92,7 @@ async function securityEvent(e) {
   else console.log(line);
 
   const min = LEVEL[process.env.ALERT_MIN_SEVERITY] ?? LEVEL.warning;
-  if (LEVEL[severity] >= min) {
+  if (LEVEL[severity] >= min && !e.skipTelegram) {
     const parts = [`${ICON[severity]} ${e.message}`];
     if (e.user) parts.push(`Tài khoản: ${e.user.username}`);
     else if (e.username) parts.push(`Tài khoản: ${e.username}`);

@@ -90,19 +90,13 @@ async function registerFailure(user, req, what) {
 
 /** Hoàn tất đăng nhập: tạo phiên, báo IP mới, trả token */
 async function completeLogin(user, req, res) {
-  const newIpForAdmin = user.role === "admin" && user.lastLoginIp && user.lastLoginIp !== req.ip;
   user.failedLogins = 0;
   user.lockUntil = null;
   user.lastLoginAt = new Date();
   user.lastLoginIp = req.ip || "";
+  // IP mới được startSession() ghi riêng (mức Cảnh báo, báo admin) → ở đây chỉ ghi thông tin
   const { token } = await startSession(user, req);
-  await securityEvent({
-    type: "login",
-    severity: newIpForAdmin ? "warning" : "info",
-    message: newIpForAdmin ? "Tài khoản ADMIN đăng nhập từ địa chỉ IP mới" : "Đăng nhập thành công",
-    user,
-    ip: req.ip,
-  });
+  await securityEvent({ type: "login", severity: "info", message: "Đăng nhập thành công", user, ip: req.ip });
   res.json({ token, user: publicUser(user) });
 }
 
