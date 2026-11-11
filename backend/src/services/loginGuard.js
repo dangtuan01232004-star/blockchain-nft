@@ -5,6 +5,8 @@
  * Lưu trong bộ nhớ (đủ cho 1 instance Render). Khởi động lại server thì đếm lại.
  */
 const { securityEvent } = require("./alerts");
+// nạp muộn để tránh vòng phụ thuộc
+const autoBlock = (ip, reason) => require("./ipBlock").blockIp(ip, { auto: true, reason }).catch(() => false);
 
 const WINDOW_MS = 15 * 60 * 1000;
 const SPRAY_THRESHOLD = Number(process.env.SPRAY_ACCOUNT_THRESHOLD || 3);
@@ -41,6 +43,7 @@ async function trackFailedLogin(ip, username) {
       dedupeKey: `spray:${ip}:${windowKey(rec.start)}`,
       meta: { accounts: [...rec.users].slice(0, 20) },
     });
+    await autoBlock(ip, `dò mật khẩu nhiều tài khoản (${sample})`);
   }
 }
 
@@ -53,6 +56,7 @@ async function reportRateLimited(ip, path) {
     ip,
     dedupeKey: `ratelimit:${ip}:${windowKey()}`,
   });
+  await autoBlock(ip, "thử đăng nhập quá nhiều lần");
 }
 
 /** Gọi khi 1 IP vượt giới hạn chung của toàn bộ API (gọi dồn / công cụ quét) */
@@ -64,6 +68,7 @@ async function reportApiFlood(ip, path) {
     ip,
     dedupeKey: `apiflood:${ip}:${windowKey()}`,
   });
+  await autoBlock(ip, "gọi API dồn dập (quét lỗ hổng / làm quá tải)");
 }
 
 module.exports = { trackFailedLogin, reportRateLimited, reportApiFlood, _byIp: byIp };

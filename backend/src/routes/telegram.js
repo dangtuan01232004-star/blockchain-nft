@@ -58,11 +58,36 @@ router.post("/webhook", async (req, res) => {
         });
         return;
       }
+      const oldChat = user.telegramChatId || "";
+      const linkSession = user.telegramLinkSession || "";
       user.telegramChatId = chatId;
       user.telegramLinkCode = "";
       user.telegramLinkExpires = null;
+      if (oldChat && oldChat !== chatId) {
+        user.telegramPrevChatId = oldChat;
+        user.telegramPrevUntil = new Date(Date.now() + 24 * 3600 * 1000);
+      }
       await user.save();
-      await securityEvent({ type: "telegram_linked", severity: "info", message: "Liên kết Telegram nhận cảnh báo đăng nhập", user });
+      if (oldChat && oldChat !== chatId) {
+        // Báo về Telegram CŨ — chủ thật vẫn còn nút khoá dù cảnh báo đã bị chuyển đi
+        await tg("sendMessage", {
+          chat_id: oldChat,
+          text:
+            `⚠️ Cảnh báo của tài khoản "${user.username}" vừa được CHUYỂN sang một Telegram khác.\n` +
+            "Từ giờ Telegram này sẽ không nhận cảnh báo nữa.\n\nNếu KHÔNG phải bạn, bấm nút dưới để khoá tài khoản ngay (còn hiệu lực 24 giờ).",
+          reply_markup: linkSession
+            ? { inline_keyboard: [[{ text: "🚫 Không phải tôi — khoá tài khoản", callback_data: `notme:${linkSession}` }]] }
+            : undefined,
+        });
+        await securityEvent({
+          type: "telegram_relinked",
+          severity: "warning",
+          message: "Đổi Telegram nhận cảnh báo sang tài khoản Telegram KHÁC (đã báo về Telegram cũ)",
+          user,
+        });
+      } else {
+        await securityEvent({ type: "telegram_linked", severity: "info", message: "Liên kết Telegram nhận cảnh báo đăng nhập", user });
+      }
       await tg("sendMessage", {
         chat_id: chatId,
         text: `✅ Đã liên kết với tài khoản "${user.username}". Bạn sẽ nhận tin khi tài khoản đăng nhập từ nơi lạ, kèm nút "Không phải tôi" để khoá tài khoản ngay.`,
@@ -78,7 +103,10 @@ router.post("/webhook", async (req, res) => {
       const session = await Session.findById(sid);
       const user = session ? await User.findById(session.userId) : null;
       // Chỉ chính chat đã liên kết với tài khoản đó mới được bấm
-      if (!user || !user.telegramChatId || user.telegramChatId !== chatId) {
+      const isCurrent = user && user.telegramChatId && user.telegramChatId === chatId;
+      const isPrevious =
+        user && user.telegramPrevChatId === chatId && user.telegramPrevUntil && new Date(user.telegramPrevUntil) > new Date();
+      if (!isCurrent && !isPrevious) {
         await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Không xác minh được tài khoản.", show_alert: true });
         return;
       }

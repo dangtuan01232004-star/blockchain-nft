@@ -156,19 +156,110 @@ document.getElementById("reportBtn").addEventListener("click", async () => {
   }
 });
 
+/**
+ * ĐỌC THẲNG BLOCKCHAIN khi máy chủ không phản hồi (bị DDoS, quá tải, đang ngủ...).
+ * Dữ liệu xác thực nằm trên chuỗi → người mua VẪN kiểm tra được hàng thật/giả
+ * qua RPC công khai, dùng địa chỉ contract + ABI đã GHIM (js/contract-pin.js).
+ * Các chức năng cần máy chủ (mã cào, báo hàng giả) tạm ngưng.
+ */
+async function verifyOnChain(tokenId) {
+  const pin = window.CONTRACT_PIN;
+  if (!pin || !pin.rpcUrl || !window.ethers) throw new Error("Không có cấu hình đọc blockchain dự phòng");
+  const provider = new ethers.JsonRpcProvider(pin.rpcUrl, pin.chainId, { staticNetwork: true });
+  const c = new ethers.Contract(pin.address, pin.abi, provider);
+  let v;
+  try {
+    v = await c.verifyProduct(tokenId);
+  } catch (err) {
+    if (err && err.code === "CALL_EXCEPTION") {
+      return { tokenId, found: false, authentic: false, offline: true };
+    }
+    throw err;
+  }
+  const [owner, uri, code, authentic] = v;
+  const [history, sec, paused] = await Promise.all([
+    c.getHistory(tokenId),
+    c.securityStatus(tokenId).catch(() => null),
+    c.paused().catch(() => false),
+  ]);
+  let metadata = null;
+  try {
+    const url = String(uri).startsWith("ipfs://") ? `https://gateway.pinata.cloud/ipfs/${String(uri).slice(7)}` : String(uri);
+    if (/^https:\/\//.test(url)) {
+      const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      if (r.ok) metadata = await r.json();
+    }
+  } catch { /* không có metadata vẫn xác thực được */ }
+  const security = { suspect: false, compromisedSince: null, suspectStep: null, paused: Boolean(paused) };
+  if (sec && sec[0]) {
+    security.suspect = true;
+    security.compromisedSince = new Date(Number(sec[2]) * 1000).toISOString();
+    security.suspectStep = Number(sec[3]);
+  }
+  const photo = (u) => (String(u || "").startsWith("ipfs://") ? `https://gateway.pinata.cloud/ipfs/${String(u).slice(7)}` : u || "");
+  return {
+    tokenId,
+    found: true,
+    authentic,
+    owner,
+    productCode: code,
+    metadata,
+    security,
+    claim: { status: "unknown" },
+    offline: true,
+    history: history.map((h) => ({
+      actor: h.actor,
+      actorRole: h.actorRole,
+      location: h.location,
+      action: h.action,
+      timestamp: new Date(Number(h.timestamp) * 1000).toISOString(),
+      photoURI: photo(h.photoURI),
+      gpsCoords: h.gpsCoords || "",
+    })),
+  };
+}
+
+function setOfflineNotice(on) {
+  const el = document.getElementById("offlineNotice");
+  if (!el) return;
+  el.hidden = !on;
+  el.textContent = on
+    ? "⚡ Máy chủ đang bận hoặc tạm gián đoạn — kết quả dưới đây được đọc TRỰC TIẾP từ blockchain nên vẫn chính xác. Chức năng nhập mã cào và báo hàng giả tạm ngưng, vui lòng thử lại sau."
+    : "";
+}
+
 async function checkToken(tokenId) {
   clearError();
+  setOfflineNotice(false);
   resultEl.classList.remove("show", "authentic", "fake");
   if (!tokenId && tokenId !== "0") {
     showError("Vui lòng nhập Token ID hợp lệ.");
     return;
   }
+  const fallback = async () => {
+    try {
+      const data = await verifyOnChain(tokenId);
+      document.getElementById("lookupStatus").hidden = true;
+      setOfflineNotice(true);
+      renderResult(data);
+      return true;
+    } catch (e) {
+      console.error("Đọc blockchain dự phòng thất bại:", e);
+      return false;
+    }
+  };
   try {
     const deviceId = getDeviceId();
     const ownerToken = getOwnerToken(tokenId);
     const res = await fetch(`${API_BASE}/api/products/verify/${encodeURIComponent(tokenId)}?deviceId=${encodeURIComponent(deviceId)}`, {
       headers: ownerToken ? { "X-Owner-Token": ownerToken } : {},
+      // Máy chủ treo (bị DDoS / đang khởi động) quá 8 giây → chuyển sang đọc thẳng blockchain
+      signal: AbortSignal.timeout(8000),
     });
+    // Máy chủ quá tải / lỗi / bị chặn → thử đọc thẳng blockchain trước khi báo lỗi
+    if (res.status >= 500 || res.status === 429) {
+      if (await fallback()) return;
+    }
     const data = await res.json();
     document.getElementById("lookupStatus").hidden = true;
     if (res.status === 503 || data.found === null) {
@@ -179,9 +270,10 @@ async function checkToken(tokenId) {
     }
     renderResult(data);
   } catch (err) {
+    if (await fallback()) return;
     document.body.classList.remove("product-lookup");
     document.getElementById("lookupStatus").hidden = true;
-    showError("Không thể kết nối tới máy chủ xác thực. Kiểm tra backend đã chạy chưa.");
+    showError("Không thể kết nối tới máy chủ xác thực và cũng không đọc được blockchain. Vui lòng thử lại sau.");
   }
 }
 

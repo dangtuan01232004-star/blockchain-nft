@@ -12,7 +12,10 @@
  */
 const PROD_API_BASE = "https://blockchain-nft-216z.onrender.com";
 
-window.API_BASE = PROD_API_BASE || `http://${window.location.hostname}:4000`;
+const isLocalHost = ["localhost", "127.0.0.1", "::1", "[::1]"].includes(window.location.hostname);
+window.API_BASE = isLocalHost
+  ? `http://${window.location.hostname}:4000`
+  : PROD_API_BASE || `http://${window.location.hostname}:4000`;
 window.getProductVerifyURL = (tokenId) => {
   const url = new URL("/verify.html", window.location.origin);
   url.searchParams.set("tokenId", String(tokenId));

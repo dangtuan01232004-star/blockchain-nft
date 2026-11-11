@@ -31,6 +31,7 @@ const WebauthnChallenge = require("../models/WebauthnChallenge");
 const webauthn = require("../services/webauthn");
 const { sendTelegram } = require("../services/alerts");
 const { trackFailedLogin } = require("../services/loginGuard");
+const ipBlock = require("../services/ipBlock");
 
 const router = express.Router();
 
@@ -911,23 +912,67 @@ router.post("/login/passkey", async (req, res) => {
  * Người dùng mở link t.me/<bot>?start=<mã> → bấm Start → backend (webhook)
  * nhận mã và gắn chat Telegram đó vào tài khoản.
  */
+/**
+ * Đổi / gỡ Telegram ĐÃ liên kết = thao tác nhạy cảm: kẻ chiếm được tài khoản
+ * sẽ chuyển cảnh báo sang Telegram của hắn để chủ thật không biết gì nữa.
+ * → bắt buộc vừa xác thực lại (passkey / mã 2FA). Lần liên kết ĐẦU TIÊN thì không cần.
+ */
+async function requireStepUpForTelegram(req, res) {
+  const full = await User.findById(req.dbUser._id);
+  if (!full.telegramChatId) return { ok: true, full };
+  const strong = full.twoFactorEnabled || (full.passkeys || []).length > 0;
+  if (!strong) {
+    await securityEvent({
+      type: "telegram_change_blocked",
+      severity: "warning",
+      message: "Thử đổi/gỡ Telegram nhưng tài khoản chưa bật passkey/2FA — đã chặn (nhờ admin xác minh nếu là chủ thật)",
+      user: full,
+      ip: req.ip,
+    });
+    res.status(403).json({
+      code: "STRONG_AUTH_REQUIRED",
+      error: "Đổi hoặc gỡ Telegram cần xác thực lại bằng passkey / mã 2FA. Tài khoản chưa bật — hãy bật trước, hoặc nhờ quản trị viên.",
+    });
+    return { ok: false };
+  }
+  if (!req.authSession.stepUpUntil || new Date(req.authSession.stepUpUntil) < new Date()) {
+    res.status(403).json({ code: "STEP_UP_REQUIRED", error: "Cần xác thực lại bằng passkey / mã 2FA trước khi đổi Telegram." });
+    return { ok: false };
+  }
+  return { ok: true, full };
+}
+
 router.post("/me/telegram/link", requireAuth, async (req, res) => {
   const bot = process.env.TELEGRAM_BOT_USERNAME;
   if (!process.env.TELEGRAM_BOT_TOKEN || !bot) {
     return res.status(503).json({ error: "Hệ thống chưa cấu hình Telegram bot (TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_USERNAME)" });
   }
+  const gate = await requireStepUpForTelegram(req, res);
+  if (!gate.ok) return;
   const code = crypto.randomBytes(12).toString("hex");
   await User.updateOne(
     { _id: req.dbUser._id },
-    { telegramLinkCode: code, telegramLinkExpires: new Date(Date.now() + 10 * 60 * 1000) }
+    { telegramLinkCode: code, telegramLinkExpires: new Date(Date.now() + 10 * 60 * 1000), telegramLinkSession: req.authSession._id }
   );
   res.json({ url: `https://t.me/${bot.replace(/^@/, "")}?start=${code}`, expiresInMinutes: 10 });
 });
 
-/** DELETE /api/auth/me/telegram — huỷ liên kết */
+/** DELETE /api/auth/me/telegram — huỷ liên kết (cần xác thực lại) */
 router.delete("/me/telegram", requireAuth, async (req, res) => {
-  await User.updateOne({ _id: req.dbUser._id }, { telegramChatId: "" });
-  await securityEvent({ type: "telegram_unlinked", severity: "warning", message: "Huỷ liên kết Telegram nhận cảnh báo", user: req.dbUser, ip: req.ip });
+  const gate = await requireStepUpForTelegram(req, res);
+  if (!gate.ok) return;
+  const old = gate.full.telegramChatId;
+  await User.updateOne(
+    { _id: req.dbUser._id },
+    { telegramChatId: "", telegramPrevChatId: old, telegramPrevUntil: new Date(Date.now() + 24 * 3600 * 1000) }
+  );
+  if (old) {
+    await sendTelegram(
+      `⚠️ Tài khoản "${gate.full.username}" vừa GỠ liên kết Telegram này (IP ${req.ip}).\nTừ giờ bạn sẽ không nhận cảnh báo nữa.\n\nNếu KHÔNG phải bạn, bấm nút dưới để khoá tài khoản ngay.`,
+      { chatId: old, buttons: [[{ text: "🚫 Không phải tôi — khoá tài khoản", callback_data: `notme:${req.authSession._id}` }]] }
+    ).catch(() => {});
+  }
+  await securityEvent({ type: "telegram_unlinked", severity: "warning", message: "Huỷ liên kết Telegram nhận cảnh báo (đã xác thực lại)", user: req.dbUser, ip: req.ip });
   res.json({ ok: true });
 });
 
@@ -1054,6 +1099,29 @@ router.patch("/me/wallet", requireAuth, async (req, res) => {
 // ---------------------------------------------------------------------
 // Chỉ admin
 // ---------------------------------------------------------------------
+
+/** GET /api/auth/blocked-ips — IP đang bị chặn */
+router.get("/blocked-ips", requireAuth, requireAdmin, async (req, res) => {
+  res.json(await ipBlock.listBlocked());
+});
+
+/** POST /api/auth/blocked-ips — body { ip, minutes, reason } */
+router.post("/blocked-ips", requireAuth, requireAdmin, async (req, res) => {
+  const ip = String((req.body && req.body.ip) || "").trim();
+  const minutes = Math.min(Math.max(Number(req.body && req.body.minutes) || 60, 5), 30 * 24 * 60);
+  if (!ipBlock.isValidIp(ip)) return res.status(400).json({ error: "Địa chỉ IP không hợp lệ" });
+  if (ip === req.ip) return res.status(400).json({ error: "Không thể chặn chính IP bạn đang dùng" });
+  const reason = String((req.body && req.body.reason) || "Admin chặn thủ công").slice(0, 200);
+  const ok = await ipBlock.blockIp(ip, { minutes, reason, by: req.dbUser.username });
+  if (!ok) return res.status(400).json({ error: "IP này nằm trong danh sách trắng (IP_ALLOWLIST) nên không bị chặn" });
+  res.json({ ok: true });
+});
+
+/** DELETE /api/auth/blocked-ips/:ip */
+router.delete("/blocked-ips/:ip", requireAuth, requireAdmin, async (req, res) => {
+  await ipBlock.unblockIp(String(req.params.ip), req.dbUser.username);
+  res.json({ ok: true });
+});
 
 /** GET /api/auth/users — danh sách tài khoản cho màn "Quản lý người dùng" */
 router.get("/users", requireAuth, requireAdmin, async (req, res) => {

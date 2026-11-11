@@ -477,7 +477,7 @@ const SEVERITY_STYLE = {
 const SEVERITY_LABEL = { critical: "Nghiêm trọng", warning: "Cảnh báo", info: "Thông tin" };
 
 async function loadSecurity() {
-  await Promise.all([loadContractSecurityState(), loadAuditLog(), loadCanaries()]);
+  await Promise.all([loadContractSecurityState(), loadAuditLog(), loadCanaries(), loadBlockedIps()]);
 }
 
 async function loadCanaries() {
@@ -595,6 +595,7 @@ function auditActions(l) {
     html += b("flag-wallet", "🚩 Gắn cờ ví", `data-wallet="${esc(l.wallet)}"`);
   }
   if (PAUSE_EVENTS.has(l.type)) html += b("pause", "⏸ Dừng khẩn cấp");
+  if (l.ip) html += b("block-ip", "🚫 Chặn IP", `data-ip="${esc(l.ip)}"`);
   html += `<div>${b("resolve", "✓ Đã xử lý")}${b("false-positive", "✗ Báo nhầm")}</div>`;
   return html;
 }
@@ -628,6 +629,58 @@ async function loadAuditLog() {
     tbody.innerHTML = `<tr><td colspan="5" style="color:var(--seal-danger)">Lỗi: ${esc(err.message)}</td></tr>`;
   }
 }
+
+// --- IP đang bị chặn ---
+async function loadBlockedIps() {
+  const tbody = document.querySelector("#blockedIpTable tbody");
+  if (!tbody) return;
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/blocked-ips`);
+    const list = await res.json();
+    if (!res.ok) throw new Error(list.error || "Không tải được danh sách");
+    tbody.innerHTML = list.length
+      ? list
+          .map(
+            (b) => `<tr>
+              <td class="mono">${esc(b.ip)}</td>
+              <td style="font-size:0.85rem">${b.auto ? '<span class="pill">Tự động</span> ' : ""}${esc(b.reason)}${b.blockedBy ? ` — ${esc(b.blockedBy)}` : ""}</td>
+              <td style="font-size:0.8rem; white-space:nowrap">${esc(new Date(b.until).toLocaleString("vi-VN"))}</td>
+              <td><button type="button" class="btn btn-outline unblock-ip" data-ip="${esc(b.ip)}" style="font-size:0.74rem; padding:4px 9px">Bỏ chặn</button></td>
+            </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="4">Không có IP nào đang bị chặn.</td></tr>`;
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--seal-danger)">Lỗi: ${esc(err.message)}</td></tr>`;
+  }
+}
+
+document.getElementById("blockedIpTable").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".unblock-ip");
+  if (!btn) return;
+  if (!window.confirm(`Bỏ chặn IP ${btn.dataset.ip}?`)) return;
+  const res = await authFetch(`${API_BASE}/api/auth/blocked-ips/${encodeURIComponent(btn.dataset.ip)}`, { method: "DELETE" });
+  if (!res.ok) alert((await res.json()).error || "Không bỏ chặn được");
+  await loadBlockedIps();
+});
+
+document.getElementById("blockIpForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const statusEl = document.getElementById("blockIpStatus");
+  const res = await authFetch(`${API_BASE}/api/auth/blocked-ips`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ip: document.getElementById("blockIpInput").value.trim(),
+      minutes: Number(document.getElementById("blockIpMinutes").value),
+      reason: "Admin chặn thủ công",
+    }),
+  });
+  const r = await res.json();
+  showStatus(statusEl, res.ok ? "Đã chặn." : "Lỗi: " + r.error, res.ok);
+  if (res.ok) document.getElementById("blockIpInput").value = "";
+  await loadBlockedIps();
+});
 
 async function setAuditStatus(id, status) {
   let note = "";
@@ -701,6 +754,24 @@ document.querySelector("#auditTable tbody").addEventListener("click", async (e) 
     }
     case "pause":
       return scrollAndHighlight(document.getElementById("pauseBtn"));
+    case "block-ip": {
+      const hours = window.prompt(
+        `Chặn IP ${d.ip} trong bao nhiêu GIỜ? (1 = 1 giờ, 24 = 1 ngày, 168 = 7 ngày)\n\nLưu ý: nhiều người có thể dùng chung IP này (cùng mạng trường/công ty).`,
+        "24"
+      );
+      if (hours === null) return;
+      const h = Number(hours);
+      if (!(h > 0)) return alert("Số giờ không hợp lệ");
+      const res = await authFetch(`${API_BASE}/api/auth/blocked-ips`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ip: d.ip, minutes: Math.round(h * 60), reason: "Admin chặn từ nhật ký bảo mật" }),
+      });
+      const r = await res.json();
+      alert(res.ok ? `Đã chặn IP ${d.ip} trong ${h} giờ.` : r.error);
+      await Promise.all([loadBlockedIps(), loadAuditLog()]);
+      return;
+    }
     default:
       return undefined;
   }
@@ -1524,8 +1595,13 @@ function renderTelegramState() {
 document.getElementById("tgLinkBtn").addEventListener("click", async () => {
   const statusEl = document.getElementById("tgStatus");
   try {
-    const res = await authFetch(`${API_BASE}/api/auth/me/telegram/link`, { method: "POST" });
-    const data = await res.json();
+    let res = await authFetch(`${API_BASE}/api/auth/me/telegram/link`, { method: "POST" });
+    let data = await res.json();
+    if (!res.ok && data.code === "STEP_UP_REQUIRED") {
+      if (!(await stepUpDialog("Xác thực lại để đổi Telegram nhận cảnh báo"))) throw new Error("Đã huỷ.");
+      res = await authFetch(`${API_BASE}/api/auth/me/telegram/link`, { method: "POST" });
+      data = await res.json();
+    }
     if (!res.ok) throw new Error(data.error);
     window.open(data.url, "_blank", "noopener");
     statusEl.className = "status-msg show ok";
@@ -1539,7 +1615,14 @@ document.getElementById("tgLinkBtn").addEventListener("click", async () => {
 
 document.getElementById("tgUnlinkBtn").addEventListener("click", async () => {
   if (!window.confirm("Huỷ liên kết Telegram? Bạn sẽ không nhận cảnh báo đăng nhập lạ nữa.")) return;
-  await authFetch(`${API_BASE}/api/auth/me/telegram`, { method: "DELETE" });
+  let res = await authFetch(`${API_BASE}/api/auth/me/telegram`, { method: "DELETE" });
+  let data = await res.json().catch(() => ({}));
+  if (!res.ok && data.code === "STEP_UP_REQUIRED") {
+    if (!(await stepUpDialog("Xác thực lại để gỡ Telegram"))) return;
+    res = await authFetch(`${API_BASE}/api/auth/me/telegram`, { method: "DELETE" });
+    data = await res.json().catch(() => ({}));
+  }
+  if (!res.ok) alert(data.error || "Không gỡ được liên kết");
   loadAccount();
 });
 

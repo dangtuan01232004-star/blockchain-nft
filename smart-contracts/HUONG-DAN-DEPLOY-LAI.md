@@ -86,5 +86,21 @@ git push
 2. **Demo hacker chỉ có ví:** trên Etherscan, mở contract → **Write Contract** → kết nối ví B → gọi `mintProduct`. Giao dịch bị từ chối với lý do `Can chu ky uy quyen mint`.
 3. **Demo hacker có tài khoản + ví nhưng không có điện thoại:** ở hộp xác thực, nhập bừa mã 6 số. Bị từ chối, và nhật ký bảo mật có cảnh báo *"ĐÚNG mật khẩu nhưng SAI mã xác thực…"*.
 
+## Các tính năng đi kèm (không cần làm gì thêm khi deploy)
+
+**Chặn IP**
+- Tự động chặn **1 giờ** những IP: dò mật khẩu nhiều tài khoản, thử đăng nhập quá nhiều, gọi API dồn dập, xin phép mint dồn dập. Admin nhận Telegram.
+- Trang admin → **Bảo mật & khẩn cấp** → khung **IP đang bị chặn**: chặn tay (1 giờ / 24 giờ / 7 ngày), **Bỏ chặn**. Mỗi dòng nhật ký có IP đều có nút **🚫 Chặn IP**.
+- **Nên đặt trên Render:** `IP_ALLOWLIST=<IP của bạn>` để không bao giờ tự chặn nhầm mình. Xem IP của bạn ở trang *Tài khoản của tôi → Phiên đăng nhập*.
+
+**Đổi Telegram an toàn hơn**
+- **Đổi hoặc gỡ** Telegram đã liên kết giờ phải **xác thực lại bằng passkey / mã 2FA**. Lần liên kết đầu tiên thì không cần.
+- Khi Telegram bị đổi sang tài khoản Telegram khác, **Telegram CŨ nhận cảnh báo kèm nút "Không phải tôi"** (còn hiệu lực 24 giờ). Admin thấy cảnh báo *"Đổi Telegram sang tài khoản KHÁC"*.
+
+**Chống quá tải / DDoS cho trang xác thực**
+- Kết quả đọc blockchain được giữ **10 giây**: 1.000 lượt quét cùng 1 mã QR chỉ tốn khoảng 1 lần đọc.
+- **Backend sập, quá tải hoặc treo quá 8 giây** → trang `verify` **tự đọc thẳng blockchain** qua RPC công khai, hiện thông báo vàng *"Máy chủ đang bận — kết quả đọc TRỰC TIẾP từ blockchain"*. Người mua vẫn biết hàng thật/giả. Chức năng mã cào tạm ngưng.
+- **Demo:** mở trang verify của một sản phẩm, nhấn F12 → tab **Network** → chọn **Offline**… (cách này chặn cả RPC). Cách dễ hơn: trên Render bấm **Suspend** service backend vài phút, rồi mở lại trang verify. Xong nhớ bấm **Resume**.
+
 ## Câu nói khi bảo vệ
 *"Private key ví thôi là không đủ để mint. Smart contract đòi thêm chữ ký thứ hai, và hệ thống chỉ cấp chữ ký đó khi chính chủ vừa xác thực bằng passkey hoặc mã 2FA trên thiết bị của họ. Chữ ký gắn chặt với ví, nội dung sản phẩm, dùng một lần và hết hạn sau 10 phút. Kẻ tấn công có ví, thậm chí có cả mật khẩu tài khoản, vẫn không mint được, và mọi lần thử đều báo cho admin."*

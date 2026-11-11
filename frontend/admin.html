@@ -349,6 +349,22 @@
       </div>
 
       <div class="panel">
+        <h2 style="margin:0 0 4px">IP đang bị chặn</h2>
+        <p class="muted" style="margin:0 0 12px; font-size:0.85rem">Hệ thống tự chặn 1 giờ những IP dò mật khẩu, gọi API dồn dập hoặc xin phép mint dồn dập. Admin chặn tay bằng nút <b>🚫 Chặn IP</b> trong Nhật ký bảo mật, hoặc nhập trực tiếp bên dưới. Lưu ý: nhiều người có thể dùng chung 1 IP (cùng mạng trường/công ty).</p>
+        <form id="blockIpForm" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end">
+          <div class="field" style="margin-bottom:0"><label for="blockIpInput">Địa chỉ IP</label><input type="text" id="blockIpInput" placeholder="vd. 203.0.113.5" required></div>
+          <div class="field" style="margin-bottom:0"><label for="blockIpMinutes">Thời gian</label>
+            <select id="blockIpMinutes"><option value="60">1 giờ</option><option value="1440" selected>24 giờ</option><option value="10080">7 ngày</option></select></div>
+          <button type="submit" class="btn btn-outline">🚫 Chặn</button>
+        </form>
+        <div class="status-msg" id="blockIpStatus" role="status" aria-live="polite"></div>
+        <table id="blockedIpTable" style="margin-top:12px">
+          <thead><tr><th>IP</th><th>Lý do</th><th>Chặn đến</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="panel">
         <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap">
           <h2 style="margin:0">Nhật ký bảo mật</h2>
           <select id="auditFilter" style="width:auto">

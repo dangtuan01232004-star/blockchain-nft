@@ -87,6 +87,11 @@ const userSchema = new mongoose.Schema(
     telegramChatId: { type: String, default: "" },
     telegramLinkCode: { type: String, default: "" },
     telegramLinkExpires: { type: Date, default: null },
+    // Phiên đã xin mã liên kết (để nút "Không phải tôi" gửi về Telegram CŨ khoá đúng phiên đó)
+    telegramLinkSession: { type: String, default: "" },
+    // Telegram cũ vẫn được bấm "Không phải tôi" trong 24h sau khi bị đổi/gỡ
+    telegramPrevChatId: { type: String, default: "" },
+    telegramPrevUntil: { type: Date, default: null },
   },
   { timestamps: true }
 );

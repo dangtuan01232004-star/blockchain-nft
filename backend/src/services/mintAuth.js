@@ -126,6 +126,7 @@ async function issueMintAuthorization({ user, session, ip, body }) {
       ip,
       dedupeKey: `mintburst:${user._id}:${Math.floor(Date.now() / (BURST_WINDOW_MIN * 60 * 1000))}`,
     });
+    await require("./ipBlock").blockIp(ip, { auto: true, reason: "xin phép mint dồn dập" }).catch(() => {});
     throw new MintAuthError(429, `Phát hành quá nhiều trong ${BURST_WINDOW_MIN} phút — tạm chặn để kiểm tra. Liên hệ quản trị viên nếu là thao tác thật.`);
   }
 

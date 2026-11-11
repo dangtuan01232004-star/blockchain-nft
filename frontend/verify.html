@@ -6,6 +6,8 @@
 <title>Xác thực sản phẩm — NFTTrace</title>
 <link rel="stylesheet" href="css/styles.css">
 <script src="js/config.js"></script>
+<script src="js/vendor/ethers-6.17.0.umd.min.js"></script>
+<script src="js/contract-pin.js"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body class="app-theme">
@@ -66,6 +68,7 @@
     </div>
 
     <p class="lookup-status" id="lookupStatus" role="status" hidden>Đang tải thông tin sản phẩm...</p>
+    <p id="offlineNotice" role="status" hidden style="margin:12px 0;padding:10px 14px;border-radius:10px;background:#fff7e6;border:1px solid #FAAD1F;color:#7a4b00;font-size:0.9rem"></p>
 
     <div class="result" id="result">
       <div class="product-visual" id="productVisual"><span class="placeholder-icon">📦</span></div>

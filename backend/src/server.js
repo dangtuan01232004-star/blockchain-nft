@@ -35,6 +35,7 @@ const shopRouter = require("./routes/shop");
 const telegramRouter = require("./routes/telegram");
 const { clientIpMiddleware } = require("./services/clientIp");
 const { reportRateLimited, reportApiFlood } = require("./services/loginGuard");
+const { ipBlockMiddleware } = require("./services/ipBlock");
 const mongoose = require("mongoose");
 const { getKey } = require("./services/crypto");
 const { runOrderPrivacyMaintenance } = require("./services/orderPrivacy");
@@ -70,6 +71,8 @@ app.set("trust proxy", 1);
 // Lấy IP THẬT của người dùng (Render có nhiều tầng proxy — xem services/clientIp.js).
 // Phải đặt TRƯỚC mọi middleware dùng req.ip (giới hạn số lần thử, ghi nhật ký...).
 app.use(clientIpMiddleware);
+// IP trong danh sách chặn → từ chối mọi API ngay từ đầu (webhook Telegram vẫn đi qua)
+app.use("/api", (req, res, next) => (req.path.startsWith("/telegram/") ? next() : ipBlockMiddleware(req, res, next)));
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
 }));

@@ -172,21 +172,49 @@ async function readSecurityStatus(contract, tokenId) {
  * Endpoint xác thực chính — được gọi khi người dùng quét mã QR.
  * Chỉ đọc dữ liệu (không cần ví, không tốn gas), an toàn cho người tiêu dùng.
  */
+// Bộ nhớ đệm ngắn cho phần ĐỌC BLOCKCHAIN của trang xác thực: 1.000 người
+// (hoặc 1 botnet) cùng quét 1 mã QR trong vài giây chỉ tốn ~1 lần đọc RPC.
+// Phần ghi nhận lượt quét + trạng thái mã cào vẫn chạy cho TỪNG request.
+const CHAIN_CACHE_MS = Number(process.env.VERIFY_CACHE_MS || 10000);
+const chainCache = new Map(); // tokenId -> { at, value } | { at, promise }
+function readChainProduct(tokenId) {
+  const hit = chainCache.get(tokenId);
+  if (hit && Date.now() - hit.at < CHAIN_CACHE_MS) return hit.promise;
+  const promise = (async () => {
+    const contract = getReadOnlyContract();
+    const [owner, uri, code, authentic, steps] = await contract.verifyProduct(tokenId);
+    const [history, metadata, security] = await Promise.all([
+      contract.getHistory(tokenId),
+      getMetadataByTokenURI(uri),
+      readSecurityStatus(contract, tokenId),
+    ]);
+    return { owner, uri, code, authentic, steps, history, metadata, security };
+  })();
+  chainCache.set(tokenId, { at: Date.now(), promise });
+  // Lỗi mạng/RPC thì không giữ trong cache; "không tồn tại" (CALL_EXCEPTION) thì giữ để chặn dò tokenId ngẫu nhiên
+  promise.catch((err) => {
+    if (!err || err.code !== "CALL_EXCEPTION") chainCache.delete(tokenId);
+  });
+  if (chainCache.size > 5000) {
+    for (const [k, v] of chainCache) if (Date.now() - v.at > CHAIN_CACHE_MS) chainCache.delete(k);
+  }
+  return promise;
+}
+
 router.get("/verify/:tokenId", async (req, res) => {
   const { tokenId } = req.params;
   const deviceId = req.query.deviceId || req.headers["x-device-id"] || "unknown";
+  if (!/^\d{1,12}$/.test(String(tokenId))) {
+    return res.status(404).json({ tokenId, found: false, authentic: false, message: "Mã sản phẩm không hợp lệ." });
+  }
   try {
-    const contract = getReadOnlyContract();
-    const [owner, uri, code, authentic, steps] = await contract.verifyProduct(tokenId);
-    const history = await contract.getHistory(tokenId);
-    const metadata = await getMetadataByTokenURI(uri);
+    const { owner, uri, code, authentic, steps, history, metadata, security } = await readChainProduct(String(tokenId));
 
     // Ghi nhận lượt quét này rồi đánh giá xem có dấu hiệu QR bị sao chép không
     // (cùng 1 tokenId nhưng bị quét từ quá nhiều thiết bị khác nhau — xem
     // backend/src/services/scanGuard.js).
     await recordScan(tokenId, deviceId, req.ip, req.headers["user-agent"]);
     const scan = await evaluateSuspicion(tokenId);
-    const security = await readSecurityStatus(contract, tokenId);
     let claim = { status: "unknown" };
     try {
       claim = await getClaimStatus(tokenId, req.headers["x-owner-token"]);
@@ -324,6 +352,7 @@ router.post("/:tokenId/claim/recover", requireAuth, requireAdmin, async (req, re
 
 /** GET /api/products — dựng danh sách từ blockchain, không phụ thuộc cache file */
 router.get("/", async (req, res) => {
+  res.set("Cache-Control", "public, max-age=30");
   try {
     res.json(await listProductsFromBlockchain());
   } catch (err) {
