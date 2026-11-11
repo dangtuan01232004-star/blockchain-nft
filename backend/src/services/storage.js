@@ -28,6 +28,7 @@ fs.mkdirSync(METADATA_DIR, { recursive: true });
 const PHOTOS_DIR = path.join(__dirname, "..", "data", "photos");
 fs.mkdirSync(PHOTOS_DIR, { recursive: true });
 
+const { sanitizeImage } = require("./imageSanitize");
 const PINATA_JWT = process.env.PINATA_JWT;
 const PINATA_GATEWAY = process.env.PINATA_GATEWAY || "https://gateway.pinata.cloud/ipfs";
 const PUBLIC_IPFS_GATEWAY = "https://ipfs.io/ipfs";
@@ -85,11 +86,19 @@ async function saveMetadata(metadata) {
  * @param {string} originalname Tên file gốc, chỉ dùng để đặt tên gợi nhớ
  * @returns {Promise<{url: string}>} url dạng "ipfs://<cid>" hoặc URL cục bộ
  */
-async function savePhoto(buffer, mimetype, originalname) {
+async function savePhoto(rawBuffer, _mimetype, _originalname) {
+  // Kiểm tra đúng là ảnh + xoá EXIF/GPS TRƯỚC khi lưu (IPFS là công khai, không xoá được)
+  const clean = sanitizeImage(rawBuffer);
+  if (clean.removed.length) console.log(`Ảnh upload: đã xoá metadata ${clean.removed.join(", ")}`);
+  const buffer = clean.buffer;
+  const mimetype = clean.mimetype;
+  // Tên file do server đặt — không dùng tên gốc (có thể chứa tên người, đường dẫn máy...)
+  const originalname = `photo-${Date.now()}.${clean.ext}`;
+
   if (isIpfsEnabled()) {
     const form = new FormData();
-    form.append("file", new Blob([buffer], { type: mimetype }), originalname || "photo.jpg");
-    form.append("pinataMetadata", JSON.stringify({ name: originalname || `photo-${Date.now()}` }));
+    form.append("file", new Blob([buffer], { type: mimetype }), originalname);
+    form.append("pinataMetadata", JSON.stringify({ name: originalname }));
 
     const res = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", {
       method: "POST",
@@ -105,7 +114,7 @@ async function savePhoto(buffer, mimetype, originalname) {
   }
 
   // Fallback: lưu file cục bộ
-  const ext = (originalname || "").split(".").pop() || "jpg";
+  const ext = clean.ext;
   const filename = `${crypto.randomUUID()}.${ext}`;
   fs.writeFileSync(path.join(PHOTOS_DIR, filename), buffer);
   const baseUrl = process.env.PUBLIC_BASE_URL || "http://localhost:4000";

@@ -34,3 +34,6 @@ backend/src/data/.last-contract-address
 .impeccable/live/deferred-svelte-component-accepts.json
 .impeccable/live/*.png
 # impeccable-ignore-end
+
+# Bản sao lưu DB (đã mã hoá nhưng vẫn không đưa lên GitHub)
+backend/backups/

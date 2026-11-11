@@ -15,6 +15,7 @@ const {
   recoverOwnership,
 } = require("../services/claimCodes");
 const { recordScan, evaluateSuspicion } = require("../services/scanGuard");
+const { securityEvent } = require("../services/alerts");
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
@@ -31,6 +32,18 @@ router.post("/photo", requireAuth, requireApproved, upload.single("photo"), asyn
     const { url } = await savePhoto(req.file.buffer, req.file.mimetype, req.file.originalname);
     res.status(201).json({ url });
   } catch (err) {
+    if (err && err.status === 400) {
+      // File không phải ảnh thật (HTML/SVG/exe đổi đuôi...) — ghi nhật ký vì có thể là thử tấn công
+      await securityEvent({
+        type: "upload_rejected",
+        severity: "warning",
+        message: `Tải lên file KHÔNG phải ảnh hợp lệ (${String(req.file.originalname || "").slice(0, 80)}, ${req.file.mimetype}) — đã chặn`,
+        user: req.dbUser,
+        ip: req.ip,
+        dedupeKey: `upload_rejected:${req.dbUser && req.dbUser._id}:${Math.floor(Date.now() / 600000)}`,
+      }).catch(() => {});
+      return res.status(400).json({ error: err.message });
+    }
     console.error(err);
     res.status(500).json({ error: err.message || "Lỗi khi tải ảnh lên" });
   }
