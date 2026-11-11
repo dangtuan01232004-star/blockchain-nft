@@ -14,6 +14,16 @@ const AuditLog = require("../models/AuditLog");
  * Không bao giờ làm hỏng request chính nếu ghi log / gửi cảnh báo thất bại.
  */
 const LEVEL = { info: 0, warning: 1, critical: 2 };
+
+/**
+ * Link mở thẳng mục "Bảo mật & khẩn cấp" trong trang quản trị, gắn vào tin
+ * Telegram. Lấy từ ADMIN_PANEL_URL, hoặc suy ra từ FRONTEND_VERIFY_URL.
+ */
+function adminPanelUrl() {
+  if (process.env.ADMIN_PANEL_URL) return process.env.ADMIN_PANEL_URL;
+  const v = process.env.FRONTEND_VERIFY_URL || "";
+  return v.includes("/verify.html") ? v.replace(/\/verify\.html.*$/, "/admin.html#security") : "";
+}
 const ICON = { info: "ℹ️", warning: "⚠️", critical: "🚨" };
 
 /**
@@ -68,6 +78,8 @@ async function securityEvent(e) {
       txHash: e.txHash || "",
       dedupeKey: e.dedupeKey,
       meta: e.meta || {},
+      // Cảnh báo / nghiêm trọng mặc định là "chưa xử lý" → hiện nút xử lý trong admin
+      status: severity === "info" ? undefined : "open",
     });
   } catch (err) {
     if (err && err.code === 11000) return false; // đã ghi rồi (trùng dedupeKey)
@@ -87,6 +99,8 @@ async function securityEvent(e) {
     if (e.ip) parts.push(`IP: ${e.ip}`);
     if (e.txHash) parts.push(`Tx: ${e.txHash}`);
     parts.push(`Loại: ${e.type} · ${new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" })}`);
+    const panel = adminPanelUrl();
+    if (panel) parts.push(`Xử lý: ${panel}`);
     await sendTelegram(parts.join("\n"));
   }
   return true;

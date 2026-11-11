@@ -114,7 +114,12 @@ async function main() {
     }
     if (!ev) continue;
     const key = `${log.transactionHash}:${log.index ?? log.logIndex}`;
-    const base = { txHash: log.transactionHash, dedupeKey: key, meta: { block: log.blockNumber, event: ev.name } };
+    const tokenIdArg = ev.args && ev.args.tokenId !== undefined ? String(ev.args.tokenId) : undefined;
+    const base = {
+      txHash: log.transactionHash,
+      dedupeKey: key,
+      meta: { block: log.blockNumber, event: ev.name, ...(tokenIdArg !== undefined ? { tokenId: tokenIdArg } : {}) },
+    };
     let e = null;
 
     switch (ev.name) {

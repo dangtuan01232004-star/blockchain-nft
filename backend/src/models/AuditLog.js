@@ -20,6 +20,13 @@ const auditLogSchema = new mongoose.Schema(
     // Khoá chống trùng (ví dụ "txHash:logIndex" cho sự kiện on-chain)
     dedupeKey: { type: String, default: undefined },
     meta: { type: mongoose.Schema.Types.Mixed, default: {} },
+
+    // --- Xử lý sự cố (chỉ áp dụng cho mức cảnh báo / nghiêm trọng) ---
+    // open = chưa xử lý · resolved = đã xử lý · false_positive = báo nhầm
+    status: { type: String, enum: ["open", "resolved", "false_positive"], default: undefined, index: true },
+    resolutionNote: { type: String, default: "" },
+    handledBy: { type: String, default: "" },
+    handledAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

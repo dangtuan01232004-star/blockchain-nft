@@ -63,6 +63,26 @@ const userSchema = new mongoose.Schema(
     twoFactorLastStep: { type: Number, default: -1 }, // chống dùng lại cùng 1 mã
     backupCodeHashes: { type: [String], default: [] },
 
+    // --- Passkey (WebAuthn): chỉ lưu KHOÁ CÔNG KHAI, khoá bí mật nằm trong thiết bị ---
+    passkeys: {
+      type: [
+        new mongoose.Schema(
+          {
+            credId: { type: String, required: true },
+            publicKeyJwk: { type: mongoose.Schema.Types.Mixed, required: true },
+            alg: { type: Number, required: true },
+            signCount: { type: Number, default: 0 },
+            name: { type: String, default: "Passkey" },
+            transports: { type: [String], default: [] },
+            createdAt: { type: Date, default: Date.now },
+            lastUsedAt: { type: Date, default: null },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
+
     // --- Telegram cá nhân (nhận cảnh báo đăng nhập + nút "Không phải tôi") ---
     telegramChatId: { type: String, default: "" },
     telegramLinkCode: { type: String, default: "" },

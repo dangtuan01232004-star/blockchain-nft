@@ -553,17 +553,61 @@ async function loadContractSecurityState() {
   }
 }
 
+// Loại sự cố → hành động xử lý phù hợp
+const ACCOUNT_EVENTS = new Set([
+  "login", "login_new_ip", "account_locked", "login_disabled_account", "wallet_changed",
+  "wallet_signature_mismatch", "concurrent_sessions", "not_me_reported", "mfa_disabled",
+  "mfa_backup_code_used", "order_reveal_burst", "order_reveal_blocked", "canary_triggered", "password_changed",
+]);
+const WALLET_FLAG_EVENTS = new Set([
+  "wallet_changed", "onchain_role_granted", "onchain_mint_unknown_wallet", "onchain_mint_burst",
+  "onchain_transfer_unknown_wallet",
+]);
+const PAUSE_EVENTS = new Set(["onchain_mint_burst", "onchain_mint_unknown_wallet", "onchain_role_granted", "onchain_role_admin_changed"]);
+const STATUS_VI = { resolved: "Đã xử lý", false_positive: "Báo nhầm" };
+
+function auditActions(l) {
+  const isOpen = l.severity !== "info" && !["resolved", "false_positive"].includes(l.status);
+  const tokenId = l.meta && l.meta.tokenId !== undefined ? String(l.meta.tokenId) : "";
+  const b = (act, label, extra = "") =>
+    `<button type="button" class="btn btn-outline audit-act" data-act="${act}" data-id="${esc(l._id)}" ${extra}
+      style="font-size:0.74rem; padding:4px 9px; margin:0 4px 4px 0">${label}</button>`;
+  if (l.severity === "info") return `<span style="color:var(--ink-3); font-size:0.78rem">—</span>`;
+
+  let html = "";
+  if (!isOpen) {
+    html += `<div style="font-size:0.76rem; margin-bottom:4px"><span class="pill" style="${l.status === "resolved" ? "background:var(--seal-verified-soft); color:var(--seal-verified)" : ""}">${esc(STATUS_VI[l.status])}</span>
+      ${l.handledBy ? ` bởi <b>${esc(l.handledBy)}</b>` : ""}${l.handledAt ? ` · ${esc(new Date(l.handledAt).toLocaleString("vi-VN"))}` : ""}
+      ${l.resolutionNote ? `<br><i>${esc(l.resolutionNote)}</i>` : ""}</div>`;
+    return html + b("reopen", "↺ Mở lại");
+  }
+  if (tokenId) {
+    html += b("view-product", "🔍 Xem SP", `data-token="${esc(tokenId)}"`);
+    html += b("revoke-product", "⛔ Thu hồi SP", `data-token="${esc(tokenId)}"`);
+  }
+  if (l.userId && ACCOUNT_EVENTS.has(l.type)) {
+    html += b("lock-user", "🔒 Khoá TK", `data-user="${esc(l.userId)}" data-name="${esc(l.username)}"`);
+    html += b("revoke-sessions", "⏏ Đăng xuất TK", `data-user="${esc(l.userId)}" data-name="${esc(l.username)}"`);
+  }
+  if (l.wallet && WALLET_FLAG_EVENTS.has(l.type)) {
+    html += b("flag-wallet", "🚩 Gắn cờ ví", `data-wallet="${esc(l.wallet)}"`);
+  }
+  if (PAUSE_EVENTS.has(l.type)) html += b("pause", "⏸ Dừng khẩn cấp");
+  html += `<div>${b("resolve", "✓ Đã xử lý")}${b("false-positive", "✗ Báo nhầm")}</div>`;
+  return html;
+}
+
 async function loadAuditLog() {
   const tbody = document.querySelector("#auditTable tbody");
   const filter = document.getElementById("auditFilter").value;
-  tbody.innerHTML = `<tr><td colspan="4">Đang tải...</td></tr>`;
+  tbody.innerHTML = `<tr><td colspan="5">Đang tải...</td></tr>`;
   try {
-    const q = filter === "all" ? "" : `?severity=${filter}`;
+    const q = filter === "all" ? "" : filter === "open" ? "?status=open" : `?severity=${filter}`;
     const res = await authFetch(`${API_BASE}/api/auth/audit${q}`);
     const logs = await res.json();
     if (!res.ok) throw new Error(logs.error || "Không tải được nhật ký");
     if (!logs.length) {
-      tbody.innerHTML = `<tr><td colspan="4">Chưa có sự kiện nào.</td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="5">${filter === "open" ? "🎉 Không còn cảnh báo nào cần xử lý." : "Chưa có sự kiện nào."}</td></tr>`;
       return;
     }
     tbody.innerHTML = logs
@@ -574,13 +618,120 @@ async function loadAuditLog() {
           <td style="font-size:0.85rem">${esc(l.message)}
             ${l.txHash ? `<br><a class="mono" style="font-size:0.75rem" target="_blank" rel="noopener noreferrer" href="https://sepolia.etherscan.io/tx/${esc(l.txHash)}">${esc(l.txHash.slice(0, 18))}…</a>` : ""}</td>
           <td class="mono" style="font-size:0.75rem">${esc(l.username || "")}${l.wallet ? `<br>${esc(l.wallet)}` : ""}${l.ip ? `<br>IP ${esc(l.ip)}` : ""}</td>
+          <td>${auditActions(l)}</td>
         </tr>`
       )
       .join("");
   } catch (err) {
-    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--seal-danger)">Lỗi: ${esc(err.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="5" style="color:var(--seal-danger)">Lỗi: ${esc(err.message)}</td></tr>`;
   }
 }
+
+async function setAuditStatus(id, status) {
+  let note = "";
+  if (status !== "open") {
+    note = window.prompt(
+      status === "resolved" ? "Ghi chú cách đã xử lý (ví dụ: đã gọi điện xác minh, đã thu hồi SP #3):" : "Vì sao là báo nhầm? (ví dụ: chính chủ đổi mạng 4G)",
+      ""
+    );
+    if (note === null) return;
+  }
+  const res = await authFetch(`${API_BASE}/api/auth/audit/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ status, note }),
+  });
+  if (!res.ok) alert((await res.json()).error || "Không cập nhật được");
+  await Promise.all([loadAuditLog(), refreshSecurityBadge()]);
+}
+
+function scrollAndHighlight(el) {
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  el.style.outline = "3px solid var(--seal-danger)";
+  el.style.outlineOffset = "4px";
+  setTimeout(() => (el.style.outline = ""), 2500);
+}
+
+document.querySelector("#auditTable tbody").addEventListener("click", async (e) => {
+  const btn = e.target.closest(".audit-act");
+  if (!btn) return;
+  const d = btn.dataset;
+  switch (d.act) {
+    case "resolve":
+      return setAuditStatus(d.id, "resolved");
+    case "false-positive":
+      return setAuditStatus(d.id, "false_positive");
+    case "reopen":
+      return setAuditStatus(d.id, "open");
+    case "view-product":
+      return window.open(`verify.html?tokenId=${encodeURIComponent(d.token)}`, "_blank", "noopener");
+    case "revoke-product": {
+      // Điền sẵn form thu hồi (ký bằng ví Guardian/Admin ở mục Sản phẩm)
+      goToSection("products");
+      const panel = document.getElementById("revokePanel");
+      document.getElementById("revokeTokenId").value = d.token;
+      document.getElementById("revokeReason").value = "Xử lý cảnh báo bảo mật: nghi hàng giả / tem bị sao chép";
+      if (panel.hidden) {
+        alert("Kết nối ví có quyền Guardian hoặc Admin để hiện khung Thu hồi xác thực, rồi bấm lại nút này.");
+        return;
+      }
+      return scrollAndHighlight(panel);
+    }
+    case "lock-user": {
+      if (!window.confirm(`Khoá tài khoản ${d.name}? Mọi phiên đăng nhập của tài khoản này bị đăng xuất ngay.`)) return;
+      const res = await authFetch(`${API_BASE}/api/auth/users/${encodeURIComponent(d.user)}/disable`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ disabled: true }),
+      });
+      const r = await res.json();
+      alert(res.ok ? `Đã khoá tài khoản ${d.name}. Mở khoá lại ở mục Quản lý người dùng sau khi xác minh.` : r.error);
+      return;
+    }
+    case "revoke-sessions": {
+      if (!window.confirm(`Đăng xuất ${d.name} khỏi mọi thiết bị?`)) return;
+      const res = await authFetch(`${API_BASE}/api/auth/users/${encodeURIComponent(d.user)}/revoke-sessions`, { method: "POST" });
+      alert(res.ok ? `Đã đăng xuất ${d.name} khỏi mọi thiết bị.` : (await res.json()).error);
+      return;
+    }
+    case "flag-wallet": {
+      const input = document.getElementById("flagWallet");
+      input.value = d.wallet;
+      return scrollAndHighlight(document.getElementById("flagForm"));
+    }
+    case "pause":
+      return scrollAndHighlight(document.getElementById("pauseBtn"));
+    default:
+      return undefined;
+  }
+});
+
+// Số cảnh báo chưa xử lý trên menu
+async function refreshSecurityBadge() {
+  if (!authUser || authUser.role !== "admin") return;
+  const badge = document.getElementById("securityBadge");
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/audit/summary`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("authToken")}` },
+    });
+    if (!res.ok) return;
+    const { open, critical } = await res.json();
+    badge.hidden = !open;
+    badge.textContent = open > 99 ? "99+" : String(open);
+    badge.style.background = critical ? "var(--seal-danger)" : "#d97706";
+    badge.title = `${open} cảnh báo chưa xử lý${critical ? `, trong đó ${critical} nghiêm trọng` : ""}`;
+  } catch {
+    /* bỏ qua */
+  }
+}
+refreshSecurityBadge();
+setInterval(refreshSecurityBadge, 60 * 1000);
+
+// Mở thẳng mục Bảo mật khi vào từ link trong tin Telegram (admin.html#security)
+if (window.location.hash === "#security" && authUser && authUser.role === "admin") {
+  goToSection("security");
+}
+
 document.getElementById("auditFilter").addEventListener("change", loadAuditLog);
 
 async function runSecurityTx(statusEl, requiredRole, confirmText, send) {
@@ -1132,12 +1283,15 @@ async function loadAccount() {
     document.getElementById("mfaState").textContent = "Lỗi: " + err.message;
   }
   loadSessions();
+  loadPasskeys();
 }
 
 function renderMfaState() {
   const on = myAccount.twoFactorEnabled;
   document.getElementById("mfaState").innerHTML = on
     ? `<strong style="color:var(--seal-verified)">● Đang bật</strong> — đăng nhập cần mã 6 số từ app trên điện thoại. Còn ${myAccount.backupCodesLeft} mã dự phòng.`
+    : myAccount.passkeyCount
+    ? `<strong>● Mã 6 số chưa bật</strong> — tài khoản đang được bảo vệ bằng <strong>passkey</strong>. Có thể bật thêm mã 6 số để có mã dự phòng khi mất thiết bị.`
     : `<strong style="color:var(--seal-danger)">● Chưa bật</strong> — lộ mật khẩu là người khác vào được tài khoản.` +
       (authUser && authUser.role === "admin" ? " <strong>Tài khoản admin nên bật ngay.</strong>" : "");
   document.getElementById("mfaStartBtn").hidden = on;
@@ -1504,5 +1658,73 @@ document.getElementById("recoverForm").addEventListener("submit", async (e) => {
       `Link (gửi riêng cho khách, mở trên điện thoại mới): <span class="mono">${esc(data.link)}</span>`;
   } catch (err) {
     showStatus(statusEl, err.message, false);
+  }
+});
+
+// --- Passkey ---
+
+async function loadPasskeys() {
+  const tbody = document.querySelector("#passkeyTable tbody");
+  const addBtn = document.getElementById("passkeyAddBtn");
+  if (!Passkey.supported()) {
+    addBtn.disabled = true;
+    addBtn.textContent = "Trình duyệt này không hỗ trợ passkey";
+  }
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/me/passkeys`);
+    const list = await res.json();
+    if (!res.ok) throw new Error(list.error);
+    const t = (d) => (d ? esc(new Date(d).toLocaleString("vi-VN")) : "—");
+    tbody.innerHTML = list.length
+      ? list
+          .map(
+            (p) => `<tr>
+          <td>🔑 ${esc(p.name)}</td>
+          <td style="font-size:0.8rem">${t(p.createdAt)}</td>
+          <td style="font-size:0.8rem">${t(p.lastUsedAt)}</td>
+          <td><button type="button" class="btn btn-outline passkey-del" data-id="${esc(p.id)}" data-name="${esc(p.name)}" style="font-size:0.78rem; padding:5px 10px">Xoá</button></td>
+        </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="4">Chưa có passkey nào.</td></tr>`;
+    tbody.querySelectorAll(".passkey-del").forEach((b) =>
+      b.addEventListener("click", async () => {
+        if (!window.confirm(`Xoá passkey "${b.dataset.name}"? Thiết bị đó sẽ không đăng nhập bằng passkey được nữa.`)) return;
+        const r = await authFetch(`${API_BASE}/api/auth/me/passkeys/${encodeURIComponent(b.dataset.id)}`, { method: "DELETE" });
+        if (!r.ok) alert((await r.json()).error);
+        loadPasskeys();
+      })
+    );
+  } catch (err) {
+    tbody.innerHTML = `<tr><td colspan="4" style="color:var(--seal-danger)">Lỗi: ${esc(err.message)}</td></tr>`;
+  }
+}
+
+document.getElementById("passkeyAddBtn").addEventListener("click", async () => {
+  const statusEl = document.getElementById("passkeyStatus");
+  const password = window.prompt("Để thêm passkey, nhập lại MẬT KHẨU tài khoản (chống trường hợp người khác đang dùng phiên của bạn):");
+  if (!password) return;
+  try {
+    const optRes = await authFetch(`${API_BASE}/api/auth/me/passkeys/options`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+    const options = await optRes.json();
+    if (!optRes.ok) throw new Error(options.error);
+    showStatus(statusEl, "Làm theo hướng dẫn trên màn hình: quét vân tay, khuôn mặt hoặc nhập PIN của máy...", true);
+    const credential = await Passkey.create(options);
+    const name = window.prompt("Đặt tên cho passkey này (để nhận biết thiết bị):", Passkey.guessDeviceName()) || Passkey.guessDeviceName();
+    const res = await authFetch(`${API_BASE}/api/auth/me/passkeys`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, credential }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showStatus(statusEl, `Đã thêm passkey "${data.name}". Lần sau bấm "Đăng nhập bằng passkey" ở trang đăng nhập.`, true);
+    loadPasskeys();
+  } catch (err) {
+    showStatus(statusEl, err && err.name && err.name !== "Error" ? Passkey.friendlyError(err) : err.message, false);
   }
 });

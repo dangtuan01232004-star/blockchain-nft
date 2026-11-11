@@ -37,7 +37,7 @@
       <button class="dash-nav-item" data-section="partners" type="button">🤝 Danh bạ đối tác</button>
       <button class="dash-nav-item" data-section="account" type="button" id="accountNavItem">👤 Tài khoản của tôi</button>
       <button class="dash-nav-item" data-section="users" type="button" id="usersNavItem" style="display:none">🛡️ Quản lý người dùng</button>
-      <button class="dash-nav-item" data-section="security" type="button" id="securityNavItem" style="display:none">🚨 Bảo mật &amp; khẩn cấp</button>
+      <button class="dash-nav-item" data-section="security" type="button" id="securityNavItem" style="display:none">🚨 Bảo mật &amp; khẩn cấp <span id="securityBadge" hidden style="margin-left:6px; min-width:20px; padding:1px 7px; border-radius:999px; background:var(--seal-danger); color:#fff; font-size:0.72rem; font-weight:700"></span></button>
       <a class="dash-nav-item" href="verify.html" target="_blank">🔍 Xác thực sản phẩm ↗</a>
       <a class="dash-nav-item" href="shop.html" target="_blank">🛍️ Trang mua hàng ↗</a>
     </nav>
@@ -207,6 +207,23 @@
       </div>
 
       <div class="panel" style="margin-bottom:20px">
+        <h2>Passkey (đăng nhập bằng vân tay / khuôn mặt / PIN)</h2>
+        <p class="section-sub">
+          Khoá bí mật nằm trong máy hoặc điện thoại của bạn, server chỉ giữ khoá công khai → lộ database cũng không sao, và
+          <strong>web giả mạo không dùng được passkey</strong> (chống lừa đảo). Khi đã có passkey, đăng nhập bằng mật khẩu sẽ cần thêm bước
+          xác nhận passkey. Nên thêm passkey trên <strong>2 thiết bị</strong> (hoặc bật kèm mã 6 số) để không bị khoá ngoài khi mất máy.
+        </p>
+        <table id="passkeyTable">
+          <thead><tr><th>Tên</th><th>Thêm lúc</th><th>Dùng lần cuối</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:12px">
+          <button type="button" class="btn btn-primary" id="passkeyAddBtn">＋ Thêm passkey cho thiết bị này</button>
+        </div>
+        <div class="status-msg" id="passkeyStatus" role="status" aria-live="polite"></div>
+      </div>
+
+      <div class="panel" style="margin-bottom:20px">
         <h2>Cảnh báo qua Telegram</h2>
         <p class="section-sub" id="tgState">Đang tải...</p>
         <div style="display:flex; gap:10px; flex-wrap:wrap">
@@ -340,13 +357,14 @@
         <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap">
           <h2 style="margin:0">Nhật ký bảo mật</h2>
           <select id="auditFilter" style="width:auto">
+            <option value="open">Chưa xử lý</option>
             <option value="warning">Chỉ cảnh báo &amp; nghiêm trọng</option>
             <option value="all">Tất cả</option>
             <option value="critical">Chỉ nghiêm trọng</option>
           </select>
         </div>
         <table id="auditTable" style="margin-top:12px">
-          <thead><tr><th>Thời gian</th><th>Mức</th><th>Sự kiện</th><th>Tài khoản / Ví</th></tr></thead>
+          <thead><tr><th>Thời gian</th><th>Mức</th><th>Sự kiện</th><th>Tài khoản / Ví</th><th style="min-width:220px">Xử lý</th></tr></thead>
           <tbody></tbody>
         </table>
       </div>
@@ -470,6 +488,7 @@
   </div>
 </div>
 
+<script src="js/webauthn.js"></script>
 <script src="js/web3.js"></script>
 <script src="js/admin.js"></script>
 </body>

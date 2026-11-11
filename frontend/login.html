@@ -6,6 +6,7 @@
 <title>Đăng nhập quản trị — NFTTrace</title>
 <link rel="stylesheet" href="css/styles.css">
 <script src="js/config.js"></script>
+<script src="js/webauthn.js"></script>
 </head>
 <body class="app-theme">
 
@@ -73,7 +74,14 @@
         </div>
 
         <button type="submit" class="btn btn-primary" style="width:100%; justify-content:center" id="submitBtn">Đăng nhập</button>
+        <button type="button" class="btn btn-outline" style="width:100%; justify-content:center; margin-top:10px" id="mfaPasskeyBtn" hidden>🔑 Xác nhận bằng passkey</button>
       </form>
+
+      <div id="passkeyLoginBox" style="margin-top:14px">
+        <div style="text-align:center; font-size:0.8rem; color:var(--ink-3, #94a3b8); margin-bottom:8px">— hoặc —</div>
+        <button type="button" class="btn btn-outline" style="width:100%; justify-content:center" id="passkeyLoginBtn">🔑 Đăng nhập bằng passkey</button>
+        <p class="hint" style="font-size:0.78rem; margin-top:6px; text-align:center">Vân tay, khuôn mặt hoặc mã PIN của máy — không cần mật khẩu, không bị lừa bởi web giả.</p>
+      </div>
 
       <button class="toggle-cam" id="toggleMode" type="button">Chưa có tài khoản? Đăng ký ngay</button>
       <div class="error-note" id="errorNote"></div>
@@ -93,6 +101,7 @@
   document.getElementById("toggleMode").addEventListener("click", () => {
     mode = mode === "login" ? "register" : "login";
     resetMfa();
+    document.getElementById("passkeyLoginBox").style.display = mode === "login" && Passkey.supported() ? "block" : "none";
     document.getElementById("formTitle").textContent = mode === "login" ? "Đăng nhập quản trị" : "Đăng ký tài khoản mới";
     document.getElementById("registerFields").style.display = mode === "register" ? "block" : "none";
     document.getElementById("submitBtn").textContent = mode === "login" ? "Đăng nhập" : "Đăng ký";
@@ -133,6 +142,21 @@
 
       if (data.twoFactorRequired) {
         mfaToken = data.mfaToken;
+        const methods = data.methods || ["totp"];
+        const hasTotp = methods.includes("totp");
+        const hasPasskey = methods.includes("passkey") && Passkey.supported();
+        document.getElementById("passkeyLoginBox").style.display = "none";
+        document.getElementById("mfaPasskeyBtn").hidden = !hasPasskey;
+        if (!hasTotp) {
+          // Chỉ có passkey làm lớp 2 → mời xác nhận passkey luôn
+          submitBtn.disabled = false;
+          submitBtn.hidden = true;
+          document.getElementById("username").readOnly = true;
+          document.getElementById("password").readOnly = true;
+          if (hasPasskey) passkeyLogin(mfaToken);
+          else showError("Tài khoản yêu cầu passkey nhưng trình duyệt này không hỗ trợ.");
+          return;
+        }
         document.getElementById("mfaField").style.display = "block";
         document.getElementById("username").readOnly = true;
         document.getElementById("password").readOnly = true;
@@ -142,9 +166,7 @@
         return;
       }
 
-      localStorage.setItem("authToken", data.token);
-      localStorage.setItem("authUser", JSON.stringify(data.user));
-      window.location.href = "admin.html";
+      finishLogin(data);
     } catch (err) {
       submitBtn.disabled = false;
       submitBtn.textContent = submitLabel;
@@ -152,8 +174,52 @@
     }
   });
 
+  function finishLogin(data) {
+    localStorage.setItem("authToken", data.token);
+    localStorage.setItem("authUser", JSON.stringify(data.user));
+    window.location.href = "admin.html";
+  }
+
+  /** Đăng nhập bằng passkey — không có mfaToken = 1 chạm; có = bước 2 sau mật khẩu */
+  async function passkeyLogin(withMfaToken) {
+    clearError();
+    const btn = document.getElementById(withMfaToken ? "mfaPasskeyBtn" : "passkeyLoginBtn");
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = "Đang chờ xác nhận trên thiết bị...";
+    try {
+      const optRes = await fetch(`${API_BASE}/api/auth/passkey/login-options`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(withMfaToken ? { mfaToken: withMfaToken } : {}),
+      });
+      const options = await optRes.json();
+      if (!optRes.ok) throw new Error(options.error || "Không tạo được yêu cầu passkey");
+      const credential = await Passkey.get(options);
+      const res = await fetch(`${API_BASE}/api/auth/login/passkey`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(withMfaToken ? { credential, mfaToken: withMfaToken } : { credential }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Đăng nhập passkey thất bại");
+      finishLogin(data);
+    } catch (err) {
+      showError(err && err.name ? Passkey.friendlyError(err) : err.message);
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  }
+
+  document.getElementById("passkeyLoginBtn").addEventListener("click", () => passkeyLogin(null));
+  document.getElementById("mfaPasskeyBtn").addEventListener("click", () => passkeyLogin(mfaToken));
+  if (!Passkey.supported()) document.getElementById("passkeyLoginBox").style.display = "none";
+
   function resetMfa() {
     mfaToken = null;
+    document.getElementById("mfaPasskeyBtn").hidden = true;
+    document.getElementById("submitBtn").hidden = false;
+    document.getElementById("passkeyLoginBox").style.display = mode === "login" && Passkey.supported() ? "block" : "none";
     document.getElementById("mfaField").style.display = "none";
     document.getElementById("mfaCode").value = "";
     document.getElementById("username").readOnly = false;

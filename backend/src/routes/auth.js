@@ -15,6 +15,7 @@ const {
   revokeAllSessions,
   reportNotMe,
   shortUA,
+  IDLE_MINUTES,
 } = require("../services/sessions");
 const {
   encrypt,
@@ -26,6 +27,9 @@ const {
   hashBackupCode,
 } = require("../services/crypto");
 const QRCode = require("qrcode");
+const WebauthnChallenge = require("../models/WebauthnChallenge");
+const webauthn = require("../services/webauthn");
+const { sendTelegram } = require("../services/alerts");
 
 const router = express.Router();
 
@@ -37,7 +41,7 @@ const NONCE_TTL_MS = 5 * 60 * 1000;
 const PRIVATE_FIELDS =
   "-passwordHash -walletNonce -walletNonceFor -walletNonceExpires -tokenVersion -knownIps " +
   "-twoFactorSecret -twoFactorPendingSecret -twoFactorLastStep -backupCodeHashes " +
-  "-telegramChatId -telegramLinkCode -telegramLinkExpires";
+  "-telegramChatId -telegramLinkCode -telegramLinkExpires -passkeys";
 
 // Vai trò tài khoản → vai trò on-chain cần có trước khi được coi là "đã duyệt"
 const USER_ROLE_TO_CONTRACT_ROLE = { manufacturer: "MANUFACTURER_ROLE", distributor: "DISTRIBUTOR_ROLE" };
@@ -208,8 +212,13 @@ router.post("/login", async (req, res) => {
     }
 
     // Bật 2FA → chưa cấp phiên, chỉ trả token tạm để làm bước 2
-    if (user.twoFactorEnabled) {
-      return res.json({ twoFactorRequired: true, mfaToken: signMfaToken(user) });
+    // Có mã 6 số HOẶC có passkey → mật khẩu thôi là chưa đủ, phải qua bước 2
+    const hasPasskey = (user.passkeys || []).length > 0;
+    if (user.twoFactorEnabled || hasPasskey) {
+      const methods = [];
+      if (hasPasskey) methods.push("passkey");
+      if (user.twoFactorEnabled) methods.push("totp");
+      return res.json({ twoFactorRequired: true, mfaToken: signMfaToken(user), methods });
     }
     await completeLogin(user, req, res);
   } catch (err) {
@@ -280,6 +289,7 @@ router.get("/me", requireAuth, async (req, res) => {
   const out = typeof user.toJSON === "function" ? user.toJSON() : { ...user };
   out.telegramLinked = Boolean(full.telegramChatId);
   out.backupCodesLeft = (full.backupCodeHashes || []).length;
+  out.passkeyCount = (full.passkeys || []).length;
   out.sessionId = req.authSession._id;
   res.json(out);
 });
@@ -293,6 +303,8 @@ function sessionView(s, currentSid) {
   let state = "active";
   if (s.revokedAt) state = s.revokedReason === "idle" ? "idle" : "revoked";
   else if (new Date(s.expiresAt).getTime() < now) state = "expired";
+  // Bỏ quên quá thời gian chờ → token đã vô dụng, không hiện là "đang đăng nhập"
+  else if (now - new Date(s.lastSeenAt).getTime() > IDLE_MINUTES * 60 * 1000) state = "idle";
   return {
     id: s._id,
     current: s._id === currentSid,
@@ -495,6 +507,262 @@ router.post("/me/2fa/backup-codes", requireAuth, async (req, res) => {
   user.twoFactorLastStep = step;
   await user.save();
   res.json({ backupCodes });
+});
+
+// ---------------------------------------------------------------------
+// Passkey (WebAuthn)
+// ---------------------------------------------------------------------
+
+const CHALLENGE_TTL_MS = 2 * 60 * 1000;
+const MAX_PASSKEYS = 10;
+
+async function createChallenge(purpose, userId = "") {
+  const challenge = webauthn.newChallenge();
+  await WebauthnChallenge.create({
+    _id: challenge,
+    purpose,
+    userId: String(userId || ""),
+    expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS),
+  });
+  return challenge;
+}
+
+/** Lấy thử thách từ clientDataJSON, kiểm tra rồi XOÁ NGAY (dùng 1 lần) */
+async function consumeChallenge(credential, purpose) {
+  let challenge = "";
+  try {
+    challenge = JSON.parse(webauthn.b64u.decode(credential.response.clientDataJSON).toString("utf8")).challenge;
+  } catch {
+    throw new Error("Dữ liệu passkey không hợp lệ");
+  }
+  const doc = challenge ? await WebauthnChallenge.findById(challenge) : null;
+  if (doc) await WebauthnChallenge.deleteOne({ _id: challenge });
+  if (!doc || doc.purpose !== purpose || new Date(doc.expiresAt) < new Date()) {
+    throw new Error("Yêu cầu passkey đã hết hạn hoặc đã được dùng — thử lại");
+  }
+  return doc;
+}
+
+/** Chuyển passkey (có thể là subdocument Mongoose) thành object thường */
+function plainPasskey(p) {
+  return typeof p.toObject === "function" ? p.toObject() : { ...p };
+}
+
+function passkeyView(p) {
+  return {
+    id: p.credId,
+    name: p.name,
+    createdAt: p.createdAt,
+    lastUsedAt: p.lastUsedAt,
+    transports: p.transports || [],
+  };
+}
+
+/**
+ * POST /api/auth/me/passkeys/options — bước 1 thêm passkey.
+ * body: { password } — BẮT BUỘC nhập lại mật khẩu: kẻ đánh cắp phiên đăng
+ * nhập không lén cài passkey của hắn vào tài khoản để quay lại sau được.
+ */
+router.post("/me/passkeys/options", requireAuth, async (req, res) => {
+  try {
+    const user = await User.findById(req.dbUser._id);
+    if (!(await bcrypt.compare(String((req.body && req.body.password) || ""), user.passwordHash))) {
+      await registerFailure(user, req, "mật khẩu");
+      return res.status(401).json({ error: "Mật khẩu không đúng" });
+    }
+    if ((user.passkeys || []).length >= MAX_PASSKEYS) {
+      return res.status(400).json({ error: `Tối đa ${MAX_PASSKEYS} passkey cho mỗi tài khoản` });
+    }
+    const challenge = await createChallenge("register", user._id);
+    res.json({
+      challenge,
+      rp: { id: webauthn.rpId(), name: webauthn.rpName() },
+      user: {
+        id: webauthn.b64u.encode(Buffer.from(String(user._id))),
+        name: user.username,
+        displayName: user.displayName || user.username,
+      },
+      pubKeyCredParams: [
+        { type: "public-key", alg: webauthn.ALG_ES256 },
+        { type: "public-key", alg: webauthn.ALG_RS256 },
+      ],
+      authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
+      attestation: "none",
+      timeout: CHALLENGE_TTL_MS,
+      excludeCredentials: (user.passkeys || []).map((p) => ({ type: "public-key", id: p.credId, transports: p.transports })),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Không tạo được yêu cầu passkey" });
+  }
+});
+
+/** POST /api/auth/me/passkeys — bước 2 thêm passkey. body: { name, credential } */
+router.post("/me/passkeys", requireAuth, async (req, res) => {
+  try {
+    const { name, credential } = req.body || {};
+    const ch = await consumeChallenge(credential, "register");
+    if (ch.userId !== String(req.dbUser._id)) throw new Error("Yêu cầu passkey không thuộc tài khoản này");
+    const reg = webauthn.verifyRegistration(credential, ch._id);
+
+    const user = await User.findById(req.dbUser._id);
+    if ((user.passkeys || []).some((p) => p.credId === reg.credId)) {
+      return res.status(409).json({ error: "Passkey này đã được thêm trước đó" });
+    }
+    const label = String(name || "").trim().slice(0, 60) || "Passkey";
+    user.passkeys = [...(user.passkeys || []).map(plainPasskey), { ...reg, name: label, createdAt: new Date(), lastUsedAt: null }];
+    await user.save();
+
+    await securityEvent({
+      type: "passkey_added",
+      severity: "warning",
+      message: `Thêm passkey mới "${label}" — từ giờ đăng nhập bằng mật khẩu sẽ cần thêm bước xác thực`,
+      user,
+      ip: req.ip,
+    });
+    if (user.telegramChatId) {
+      await sendTelegram(
+        `🔑 Tài khoản "${user.username}" vừa THÊM passkey "${label}".\nNếu không phải bạn, vào Tài khoản của tôi để xoá passkey đó và đổi mật khẩu ngay.`,
+        { chatId: user.telegramChatId }
+      );
+    }
+    res.status(201).json(passkeyView(user.passkeys[user.passkeys.length - 1]));
+  } catch (err) {
+    res.status(400).json({ error: err.message || "Không thêm được passkey" });
+  }
+});
+
+/** GET /api/auth/me/passkeys — danh sách passkey của tôi */
+router.get("/me/passkeys", requireAuth, async (req, res) => {
+  const user = await User.findById(req.dbUser._id);
+  res.json((user.passkeys || []).map(passkeyView));
+});
+
+/** DELETE /api/auth/me/passkeys/:id — xoá 1 passkey */
+router.delete("/me/passkeys/:id", requireAuth, async (req, res) => {
+  const user = await User.findById(req.dbUser._id);
+  const target = (user.passkeys || []).find((p) => p.credId === req.params.id);
+  if (!target) return res.status(404).json({ error: "Không tìm thấy passkey" });
+  user.passkeys = user.passkeys.filter((p) => p.credId !== req.params.id).map(plainPasskey);
+  await user.save();
+  await securityEvent({
+    type: "passkey_removed",
+    severity: "warning",
+    message: `Xoá passkey "${target.name}"`,
+    user,
+    ip: req.ip,
+  });
+  res.json({ ok: true });
+});
+
+/**
+ * POST /api/auth/passkey/login-options — thử thách đăng nhập.
+ * body: { mfaToken? } — có mfaToken = đang ở bước 2 (đã qua mật khẩu) →
+ * chỉ cho dùng passkey của đúng tài khoản đó. Không có = đăng nhập 1 chạm.
+ */
+router.post("/passkey/login-options", async (req, res) => {
+  try {
+    let userId = "";
+    let allowCredentials = [];
+    const mfaToken = req.body && req.body.mfaToken;
+    if (mfaToken) {
+      let payload;
+      try {
+        payload = jwt.verify(String(mfaToken), process.env.JWT_SECRET, { algorithms: ["HS256"] });
+        if (payload.typ !== "mfa") throw new Error();
+      } catch {
+        return res.status(401).json({ error: "Phiên xác thực đã hết hạn — vui lòng đăng nhập lại." });
+      }
+      const user = await User.findById(payload.id);
+      if (!user || !(user.passkeys || []).length) return res.status(400).json({ error: "Tài khoản chưa có passkey" });
+      userId = String(user._id);
+      allowCredentials = user.passkeys.map((p) => ({ type: "public-key", id: p.credId, transports: p.transports }));
+    }
+    const challenge = await createChallenge("login", userId);
+    res.json({
+      challenge,
+      rpId: webauthn.rpId(),
+      userVerification: "required",
+      timeout: CHALLENGE_TTL_MS,
+      allowCredentials,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Không tạo được yêu cầu passkey" });
+  }
+});
+
+/**
+ * POST /api/auth/login/passkey — đăng nhập bằng passkey.
+ * body: { credential, mfaToken? }
+ * Passkey = thiết bị (thứ bạn có) + vân tay/khuôn mặt/PIN (thứ bạn là/biết)
+ * → tự nó đã là xác thực nhiều lớp, không hỏi thêm mã 6 số.
+ */
+router.post("/login/passkey", async (req, res) => {
+  const { credential, mfaToken } = req.body || {};
+  let user = null;
+  try {
+    const ch = await consumeChallenge(credential, "login");
+
+    // Tìm tài khoản: theo userHandle (passkey tự khai) hoặc theo tài khoản của bước 2
+    let userId = ch.userId;
+    const handle = credential.response && credential.response.userHandle;
+    if (handle) {
+      const fromHandle = webauthn.b64u.decode(handle).toString("utf8");
+      if (userId && fromHandle !== userId) throw new Error("Passkey không thuộc tài khoản đang đăng nhập");
+      userId = fromHandle;
+    }
+    if (!userId) throw new Error("Không xác định được tài khoản của passkey");
+    user = await User.findById(userId);
+    const stored = user && (user.passkeys || []).find((p) => p.credId === credential.id);
+    if (!stored) throw new Error("Passkey không còn hiệu lực (có thể đã bị xoá)");
+
+    if (mfaToken) {
+      let payload;
+      try {
+        payload = jwt.verify(String(mfaToken), process.env.JWT_SECRET, { algorithms: ["HS256"] });
+      } catch {
+        throw new Error("Phiên xác thực đã hết hạn — vui lòng đăng nhập lại.");
+      }
+      if (payload.typ !== "mfa" || String(payload.id) !== String(user._id)) throw new Error("Passkey không thuộc tài khoản đang đăng nhập");
+    }
+
+    const result = webauthn.verifyAuthentication(credential, ch._id, plainPasskey(stored));
+
+    if (user.disabled) {
+      await securityEvent({ type: "login_disabled_account", severity: "warning", message: "Đăng nhập passkey vào tài khoản đã bị khoá", user, ip: req.ip });
+      return res.status(403).json({ error: "Tài khoản đã bị khoá. Liên hệ quản trị viên." });
+    }
+    if (user.lockUntil && user.lockUntil > new Date()) return lockedResponse(user, res);
+
+    user.passkeys = user.passkeys.map((p) => {
+      const o = plainPasskey(p);
+      return o.credId === stored.credId ? { ...o, signCount: result.signCount, lastUsedAt: new Date() } : o;
+    });
+    if (result.cloneWarning) {
+      await securityEvent({
+        type: "passkey_clone_suspected",
+        severity: "critical",
+        message: `Bộ đếm chữ ký của passkey "${stored.name}" bị lùi — nghi passkey đã bị sao chép. Nên xoá passkey này.`,
+        user,
+        ip: req.ip,
+      });
+    }
+    await securityEvent({ type: "login_passkey", severity: "info", message: `Đăng nhập bằng passkey "${stored.name}"`, user, ip: req.ip });
+    await completeLogin(user, req, res);
+  } catch (err) {
+    const msg = err.message || "Đăng nhập passkey thất bại";
+    // Passkey bị dùng trên trang lạ = dấu hiệu web giả mạo
+    const phishing = /trang lạ/.test(msg);
+    await securityEvent({
+      type: phishing ? "passkey_phishing_blocked" : "passkey_failed",
+      severity: phishing ? "warning" : "info",
+      message: `Đăng nhập passkey bị từ chối: ${msg}`,
+      user: user || undefined,
+      ip: req.ip,
+    });
+    res.status(401).json({ error: msg });
+  }
 });
 
 // ---------------------------------------------------------------------
@@ -737,13 +1005,49 @@ router.post("/users/:id/revoke-sessions", requireAuth, requireAdmin, async (req,
   res.json({ ok: true });
 });
 
-/** GET /api/auth/audit?severity=warning — nhật ký bảo mật mới nhất */
+// Sự kiện cần xử lý = mức cảnh báo/nghiêm trọng chưa được đánh dấu xong
+// (bản ghi cũ trước khi có trường status cũng tính là chưa xử lý)
+const OPEN_FILTER = { severity: { $in: ["warning", "critical"] }, status: { $nin: ["resolved", "false_positive"] } };
+
+/**
+ * GET /api/auth/audit?severity=warning|critical&status=open — nhật ký bảo mật mới nhất
+ */
 router.get("/audit", requireAuth, requireAdmin, async (req, res) => {
-  const filter = {};
+  let filter = {};
+  if (req.query.status === "open") filter = { ...OPEN_FILTER };
   if (req.query.severity === "warning") filter.severity = { $in: ["warning", "critical"] };
   if (req.query.severity === "critical") filter.severity = "critical";
   const logs = await AuditLog.find(filter).sort({ createdAt: -1 }).limit(200).lean();
   res.json(logs);
+});
+
+/** GET /api/auth/audit/summary — số cảnh báo chưa xử lý (hiện trên menu) */
+router.get("/audit/summary", requireAuth, requireAdmin, async (req, res) => {
+  const [open, critical] = await Promise.all([
+    AuditLog.countDocuments(OPEN_FILTER),
+    AuditLog.countDocuments({ ...OPEN_FILTER, severity: "critical" }),
+  ]);
+  res.json({ open, critical });
+});
+
+/**
+ * PATCH /api/auth/audit/:id — đánh dấu xử lý sự cố.
+ * body: { status: "resolved" | "false_positive" | "open", note }
+ */
+router.patch("/audit/:id", requireAuth, requireAdmin, async (req, res) => {
+  const { status, note } = req.body || {};
+  if (!["resolved", "false_positive", "open"].includes(status)) {
+    return res.status(400).json({ error: "Trạng thái không hợp lệ" });
+  }
+  const log = await AuditLog.findById(req.params.id);
+  if (!log) return res.status(404).json({ error: "Không tìm thấy sự kiện" });
+  if (log.severity === "info") return res.status(400).json({ error: "Sự kiện thông tin không cần xử lý" });
+  const update =
+    status === "open"
+      ? { status, handledBy: "", handledAt: null, resolutionNote: "" }
+      : { status, handledBy: req.dbUser.username, handledAt: new Date(), resolutionNote: String(note || "").slice(0, 500) };
+  await AuditLog.updateOne({ _id: log._id }, update);
+  res.json({ ...(await AuditLog.findById(log._id).lean()) });
 });
 
 module.exports = router;

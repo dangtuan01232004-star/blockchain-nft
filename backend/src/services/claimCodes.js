@@ -127,6 +127,7 @@ async function issueClaimCode(tokenId, user, req, { regenerate = false } = {}) {
       message: `Cấp lại mã cào cho sản phẩm #${tokenId} (lần ${version}) — mã/tem cũ mất hiệu lực`,
       user,
       ip: req.ip,
+      meta: { tokenId: String(tokenId) },
     });
   } else {
     await ProductClaim.create({ contract, tokenId, codeHash, codeIssuedBy: user.username });
@@ -166,7 +167,8 @@ async function claimProduct(tokenId, code, contact, req) {
         severity: "warning",
         message: `Sản phẩm #${tokenId}: nhập sai mã cào ${MAX_FAILED} lần liên tiếp — khoá ${LOCK_MINUTES} phút. Có thể có người đang đoán mã.`,
         ip: req.ip,
-      });
+        meta: { tokenId: String(tokenId) },
+    });
     }
     return {
       status: 400,
@@ -183,6 +185,7 @@ async function claimProduct(tokenId, code, contact, req) {
       severity: "warning",
       message: `Sản phẩm #${tokenId}: có người nhập ĐÚNG mã cào nhưng sản phẩm đã được kích hoạt từ ${new Date(claim.claimedAt).toLocaleString("vi-VN")} — nghi tem bị sao chép hoặc hàng đã qua tay`,
       ip: req.ip,
+      meta: { tokenId: String(tokenId) },
     });
     return {
       status: 409,
@@ -256,7 +259,8 @@ async function recoverOwnership(tokenId, adminUser, req) {
     message: `Admin ${adminUser.username} cấp lại quyền chủ sở hữu sản phẩm #${tokenId} (liên hệ đăng ký: ${claim.contactMasked || "không có"})`,
     user: adminUser,
     ip: req.ip,
-  });
+    meta: { tokenId: String(tokenId) },
+    });
   return { ok: true, ownerToken, contactMasked: claim.contactMasked };
 }
 

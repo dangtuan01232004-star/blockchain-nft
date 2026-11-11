@@ -555,6 +555,16 @@ Cài Telegram cá nhân: đặt `TELEGRAM_BOT_USERNAME`, `TELEGRAM_WEBHOOK_SECRE
 
 **Hạn chế cần nêu trong báo cáo:** hệ thống không phân biệt thật/giả nếu khách **chưa cào tem** — cần in hướng dẫn "cào & kích hoạt ngay khi nhận hàng". Kẻ xấu có thể cố ý nhập sai để khoá tạm 1 giờ việc kích hoạt một sản phẩm (không chiếm được sản phẩm).
 
-### 8.7. Test
+### 8.7. Passkey (WebAuthn) — đăng nhập chống lừa đảo
+
+- **Thêm passkey:** *Tài khoản của tôi → Thêm passkey cho thiết bị này* → nhập lại mật khẩu (kẻ đánh cắp phiên không lén cài passkey được) → quét vân tay / khuôn mặt / PIN (Windows Hello, Touch ID, Android, iPhone).
+- **Đăng nhập 1 chạm:** trang đăng nhập → *Đăng nhập bằng passkey* — không cần mật khẩu.
+- **Lớp 2:** tài khoản đã có passkey thì đăng nhập bằng mật khẩu phải xác nhận thêm passkey (hoặc mã 6 số nếu có bật).
+- `REQUIRE_ADMIN_2FA=true` chấp nhận admin có passkey **hoặc** mã 6 số.
+- Server **chỉ lưu khoá công khai**; mỗi thử thách dùng 1 lần (2 phút); kiểm tra tên miền (rpId) + origin → **web giả mạo không dùng được passkey** (bị chặn và ghi cảnh báo *passkey_phishing_blocked*); kiểm tra bộ đếm chữ ký để phát hiện passkey bị sao chép.
+- Xác minh WebAuthn viết bằng `crypto` có sẵn của Node (ES256 + RS256), không cần thư viện ngoài.
+- Cấu hình: `WEBAUTHN_RP_ID` (mặc định lấy từ `FRONTEND_ORIGIN`). Passkey gắn với tên miền — đổi tên miền frontend thì phải thêm lại passkey.
+
+### 8.8. Test
 
 `npx hardhat test` gồm 18 test bảo mật mới (`test/ProductNFT.security.test.js`): chống leo thang đặc quyền, pause, gắn cờ ví và khoanh vùng sản phẩm, chặn chuyển token ngoài luồng.

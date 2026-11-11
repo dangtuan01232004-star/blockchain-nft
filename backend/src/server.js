@@ -143,6 +143,8 @@ const accountLimiter = rateLimit({
 app.use("/api/auth/login", loginLimiter); // gồm cả /login/2fa
 app.use("/api/auth/me/password", accountLimiter);
 app.use("/api/auth/me/2fa", accountLimiter);
+app.use("/api/auth/passkey", accountLimiter);
+app.use("/api/auth/me/passkeys", accountLimiter);
 app.use("/api/auth/me/wallet", walletLimiter);
 app.use("/api/auth/register", registerLimiter);
 app.post("/api/shop/orders", orderLimiter);

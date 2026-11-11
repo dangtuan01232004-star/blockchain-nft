@@ -38,7 +38,7 @@ async function requireAuth(req, res, next) {
 
   try {
     const user = await User.findById(payload.id).select(
-      "username displayName role roleStatus walletAddress tokenVersion disabled twoFactorEnabled"
+      "username displayName role roleStatus walletAddress tokenVersion disabled twoFactorEnabled passkeys"
     );
     if (!user || user.disabled || (payload.tv ?? 0) !== (user.tokenVersion ?? 0)) {
       return res.status(401).json({ error: "Phiên đăng nhập không còn hiệu lực — vui lòng đăng nhập lại." });
@@ -64,9 +64,10 @@ function requireAdmin(req, res, next) {
   if (!req.dbUser || req.dbUser.role !== "admin") {
     return res.status(403).json({ error: "Chỉ tài khoản admin mới có quyền thực hiện việc này." });
   }
-  if (process.env.REQUIRE_ADMIN_2FA === "true" && !req.dbUser.twoFactorEnabled) {
+  const hasStrongAuth = req.dbUser.twoFactorEnabled || (req.dbUser.passkeys && req.dbUser.passkeys.length > 0);
+  if (process.env.REQUIRE_ADMIN_2FA === "true" && !hasStrongAuth) {
     return res.status(403).json({
-      error: "Tài khoản admin phải bật xác thực 2 lớp trước — vào mục Tài khoản của tôi để bật.",
+      error: "Tài khoản admin phải bật xác thực 2 lớp (mã 6 số hoặc passkey) trước — vào mục Tài khoản của tôi để bật.",
       code: "ADMIN_2FA_REQUIRED",
     });
   }
