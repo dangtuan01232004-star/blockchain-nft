@@ -582,7 +582,9 @@ function auditActions(l) {
     return html + b("reopen", "↺ Mở lại");
   }
   if (tokenId) {
-    html += b("view-product", "🔍 Xem SP", `data-token="${esc(tokenId)}"`);
+    // Link thường (không dùng window.open) → không bao giờ bị chặn như popup
+    html += `<a class="btn btn-outline" href="verify.html?tokenId=${encodeURIComponent(tokenId)}" target="_blank" rel="noopener noreferrer"
+      style="font-size:0.74rem; padding:4px 9px; margin:0 4px 4px 0; text-decoration:none">🔍 Xem SP</a>`;
     html += b("revoke-product", "⛔ Thu hồi SP", `data-token="${esc(tokenId)}"`);
   }
   if (l.userId && ACCOUNT_EVENTS.has(l.type)) {
@@ -663,8 +665,6 @@ document.querySelector("#auditTable tbody").addEventListener("click", async (e) 
       return setAuditStatus(d.id, "false_positive");
     case "reopen":
       return setAuditStatus(d.id, "open");
-    case "view-product":
-      return window.open(`verify.html?tokenId=${encodeURIComponent(d.token)}`, "_blank", "noopener");
     case "revoke-product": {
       // Điền sẵn form thu hồi (ký bằng ví Guardian/Admin ở mục Sản phẩm)
       goToSection("products");
