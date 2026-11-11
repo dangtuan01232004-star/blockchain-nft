@@ -114,6 +114,13 @@ async function checkSession(payload, req) {
     return { ok: false, reason: `Bạn đã không thao tác quá ${IDLE_MINUTES} phút — vui lòng đăng nhập lại.` };
   }
 
+  // Request kiểm tra nền (trang tự hỏi "phiên còn sống không?", đếm cảnh báo...)
+  // KHÔNG tính là người dùng đang thao tác → không gia hạn thời gian chờ,
+  // nếu không thì để quên tab mở cả ngày phiên vẫn không bao giờ hết hạn.
+  if (req.headers && req.headers["x-background-check"] === "1") {
+    return { ok: true, session };
+  }
+
   // Cập nhật "lần cuối dùng" tối đa mỗi 30 giây/lần để đỡ ghi database
   const ip = req.ip || "";
   if (now - new Date(session.lastSeenAt).getTime() > 30 * 1000 || session.lastSeenIp !== ip) {

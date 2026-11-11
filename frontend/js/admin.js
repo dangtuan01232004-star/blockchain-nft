@@ -555,7 +555,7 @@ async function loadContractSecurityState() {
 
 // Loại sự cố → hành động xử lý phù hợp
 const ACCOUNT_EVENTS = new Set([
-  "login", "login_new_ip", "account_locked", "login_disabled_account", "wallet_changed",
+  "login", "login_new_ip", "account_locked", "mfa_failed_password_ok", "login_disabled_account", "wallet_changed",
   "wallet_signature_mismatch", "concurrent_sessions", "not_me_reported", "mfa_disabled",
   "mfa_backup_code_used", "order_reveal_burst", "order_reveal_blocked", "canary_triggered", "password_changed",
 ]);
@@ -712,7 +712,8 @@ async function refreshSecurityBadge() {
   const badge = document.getElementById("securityBadge");
   try {
     const res = await fetch(`${API_BASE}/api/auth/audit/summary`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem("authToken")}` },
+      // Đếm cảnh báo chạy nền → không được tính là "đang thao tác" (không gia hạn phiên)
+      headers: { Authorization: `Bearer ${localStorage.getItem("authToken")}`, "X-Background-Check": "1" },
     });
     if (!res.ok) return;
     const { open, critical } = await res.json();
@@ -726,6 +727,28 @@ async function refreshSecurityBadge() {
 }
 refreshSecurityBadge();
 setInterval(refreshSecurityBadge, 60 * 1000);
+
+// --- Tự thoát khi phiên bị thu hồi ---
+// Admin bấm "Đăng xuất mọi phiên" / "Khoá tài khoản", hoặc chủ tài khoản bấm
+// "Không phải tôi" → các tab đang mở phải văng ra NGAY, không chờ tới lần bấm nút kế tiếp.
+// Kiểm tra mỗi 15 giây + mỗi khi quay lại tab. Không gia hạn thời gian chờ của phiên.
+let sessionCheckBusy = false;
+async function checkSessionAlive() {
+  if (sessionCheckBusy || !localStorage.getItem("authToken")) return;
+  sessionCheckBusy = true;
+  try {
+    await authFetch(`${API_BASE}/api/auth/session-check`, { headers: { "X-Background-Check": "1" } });
+  } catch {
+    /* 401 → authFetch đã báo lý do và chuyển về trang đăng nhập; lỗi mạng thì thử lại lần sau */
+  } finally {
+    sessionCheckBusy = false;
+  }
+}
+setInterval(checkSessionAlive, 15 * 1000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") checkSessionAlive();
+});
+window.addEventListener("focus", checkSessionAlive);
 
 // Mở thẳng mục Bảo mật khi vào từ link trong tin Telegram (admin.html#security)
 if (window.location.hash === "#security" && authUser && authUser.role === "admin") {
@@ -1601,18 +1624,20 @@ function printClaimLabel(label) {
     <div class="hd">① Cào lớp bạc ② Quét mã QR ③ Nhập mã để xác thực &amp; đăng ký chủ sở hữu.<br><b>KHÔNG MUA nếu lớp cào đã bị cào.</b></div>
   </div>
   <p class="noprint" style="font-size:12px;color:#555">Dán lớp phủ cào (scratch-off sticker) lên ô có viền đen.</p>
-  <button class="noprint" onclick="window.print()">In</button>
-  <script>
-    // Chỉ in khi ảnh QR đã tải xong — in sớm sẽ ra tem THIẾU mã QR
-    (function () {
-      var img = document.querySelector("img");
-      function go() { setTimeout(function () { window.print(); }, 150); }
-      if (img.complete && img.naturalWidth) go();
-      else { img.onload = go; img.onerror = function () { alert("Không tải được ảnh mã QR — kiểm tra kết nối rồi bấm In lại."); }; }
-    })();
-  <\/script>
+  <button class="noprint" type="button" id="printBtn">In</button>
   </body></html>`);
   w.document.close();
+
+  // Gắn sự kiện TỪ trang này (không dùng onclick/<script> trong cửa sổ in) → tuân thủ CSP
+  w.document.getElementById("printBtn").addEventListener("click", () => w.print());
+  // Chỉ in khi ảnh QR đã tải xong — in sớm sẽ ra tem THIẾU mã QR
+  const img = w.document.querySelector("img");
+  const go = () => setTimeout(() => w.print(), 150);
+  if (img.complete && img.naturalWidth) go();
+  else {
+    img.addEventListener("load", go);
+    img.addEventListener("error", () => w.alert("Không tải được ảnh mã QR — kiểm tra kết nối rồi bấm In lại."));
+  }
 }
 
 document.getElementById("printLabelBtn").addEventListener("click", () => {

@@ -6,14 +6,7 @@
 <title>NFTTrace — Nền tảng định danh, xác thực và truy xuất nguồn gốc bằng Blockchain</title>
 <link rel="stylesheet" href="css/styles.css">
 <script src="js/config.js"></script>
-<script>
-  const productTokenId = new URLSearchParams(window.location.search).get("tokenId");
-  if (productTokenId !== null && productTokenId.trim()) {
-    const verifyUrl = new URL("/verify.html", window.location.origin);
-    verifyUrl.searchParams.set("tokenId", productTokenId);
-    window.location.replace(verifyUrl.href);
-  }
-</script>
+<script src="js/pages/index-redirect.js"></script>
 </head>
 <body class="app-theme">
 
@@ -138,20 +131,7 @@
   </div>
 </footer>
 
-<script>
-  const API_BASE = window.API_BASE || `http://${window.location.hostname}:4000`;
-  fetch(`${API_BASE}/api/products`)
-    .then((r) => {
-      if (!r.ok) throw new Error("Không tải được danh sách sản phẩm");
-      return r.json();
-    })
-    .then((list) => { document.getElementById("statProducts").textContent = list.length; })
-    .catch(() => { document.getElementById("statProducts").textContent = "—"; });
-  fetch(`${API_BASE}/api/partners`)
-    .then((r) => r.json())
-    .then((list) => { document.getElementById("statPartners").textContent = list.length; })
-    .catch(() => { document.getElementById("statPartners").textContent = "0"; });
-</script>
+<script src="js/pages/index.js"></script>
 
 </body>
 </html>

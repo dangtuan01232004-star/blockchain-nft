@@ -11,12 +11,7 @@
 </head>
 <body class="app-theme">
 
-<script>
-  // Gác cổng: chưa đăng nhập thì đá thẳng về trang login, không cho vào admin
-  if (!localStorage.getItem("authToken")) {
-    window.location.href = "login.html";
-  }
-</script>
+<script src="js/pages/admin-guard.js"></script>
 
 <div class="dash-shell">
 

@@ -30,6 +30,7 @@ const QRCode = require("qrcode");
 const WebauthnChallenge = require("../models/WebauthnChallenge");
 const webauthn = require("../services/webauthn");
 const { sendTelegram } = require("../services/alerts");
+const { trackFailedLogin } = require("../services/loginGuard");
 
 const router = express.Router();
 
@@ -68,24 +69,70 @@ function publicUser(user) {
   };
 }
 
+/** Gửi tin Telegram riêng cho CHÍNH CHỦ tài khoản (nếu đã liên kết) */
+async function notifyOwner(user, text) {
+  if (!user.telegramChatId) return false;
+  try {
+    await sendTelegram(text, { chatId: user.telegramChatId });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Ghi nhận sai mật khẩu / sai mã 2FA — đủ ngưỡng thì khoá tạm tài khoản */
 async function registerFailure(user, req, what) {
   user.failedLogins = (user.failedLogins || 0) + 1;
+  const isMfa = what === "mã 2FA";
   if (user.failedLogins >= MAX_FAILED_LOGINS) {
     user.lockUntil = new Date(Date.now() + LOCK_MINUTES * 60000);
     user.failedLogins = 0;
     await user.save();
+    const told = await notifyOwner(
+      user,
+      `🔒 Tài khoản "${user.username}" vừa bị KHOÁ ${LOCK_MINUTES} phút vì nhập sai ${what} ${MAX_FAILED_LOGINS} lần.\n` +
+        `IP: ${req.ip}\n\n` +
+        (isMfa
+          ? "Người này đã nhập ĐÚNG mật khẩu của bạn → mật khẩu đã bị lộ. Hãy đổi mật khẩu ngay khi mở khoá."
+          : "Nếu không phải bạn, có người đang dò mật khẩu. Hãy đặt mật khẩu mạnh và bật xác thực 2 lớp / passkey.")
+    );
     await securityEvent({
       type: "account_locked",
-      severity: user.role === "admin" ? "critical" : "warning",
-      message: `Tài khoản bị khoá ${LOCK_MINUTES} phút sau ${MAX_FAILED_LOGINS} lần sai ${what} — có thể đang bị dò`,
+      severity: user.role === "admin" || isMfa ? "critical" : "warning",
+      message:
+        `Tài khoản bị khoá ${LOCK_MINUTES} phút sau ${MAX_FAILED_LOGINS} lần sai ${what} — có thể đang bị dò` +
+        (told ? " (đã báo chủ tài khoản qua Telegram)" : " (chủ tài khoản chưa liên kết Telegram)"),
       user,
       ip: req.ip,
     });
-  } else {
-    await user.save();
-    await securityEvent({ type: what === "mã 2FA" ? "mfa_failed" : "login_failed", severity: "info", message: `Sai ${what}`, user, ip: req.ip });
+    return;
   }
+  await user.save();
+
+  if (isMfa) {
+    // Đã qua bước mật khẩu mà sai 2FA = MẬT KHẨU ĐÃ LỘ. Báo ngay từ lần sai đầu
+    // (mỗi tài khoản tối đa 1 cảnh báo / 15 phút, các lần sau chỉ ghi nhật ký).
+    const fresh = await securityEvent({
+      type: "mfa_failed_password_ok",
+      severity: "warning",
+      message: "ĐÚNG mật khẩu nhưng SAI mã xác thực 2 lớp — mật khẩu của tài khoản này có thể đã bị lộ",
+      user,
+      ip: req.ip,
+      dedupeKey: `mfafail:${user._id}:${Math.floor(Date.now() / (15 * 60 * 1000))}`,
+    });
+    if (fresh) {
+      await notifyOwner(
+        user,
+        `⚠️ Có người vừa nhập ĐÚNG mật khẩu tài khoản "${user.username}" nhưng bị chặn ở bước xác thực 2 lớp.\n` +
+          `IP: ${req.ip}\n\n` +
+          "Nếu không phải bạn: mật khẩu của bạn có thể đã bị lộ — hãy ĐỔI MẬT KHẨU NGAY."
+      );
+      return;
+    }
+    await securityEvent({ type: "mfa_failed", severity: "info", message: "Sai mã 2FA", user, ip: req.ip });
+    return;
+  }
+  await securityEvent({ type: "login_failed", severity: "info", message: `Sai ${what}`, user, ip: req.ip });
 }
 
 /** Hoàn tất đăng nhập: tạo phiên, báo IP mới, trả token */
@@ -183,6 +230,7 @@ router.post("/login", async (req, res) => {
     const user = await User.findOne({ username: String(username).toLowerCase() });
     if (!user) {
       await bcrypt.compare(String(password), DUMMY_HASH);
+      await trackFailedLogin(req.ip, username);
       return res.status(401).json({ error: "Sai username hoặc mật khẩu" });
     }
 
@@ -190,6 +238,7 @@ router.post("/login", async (req, res) => {
 
     const ok = await bcrypt.compare(String(password), user.passwordHash);
     if (!ok) {
+      await trackFailedLogin(req.ip, username);
       await registerFailure(user, req, "mật khẩu");
       return res.status(401).json({ error: "Sai username hoặc mật khẩu" });
     }
@@ -273,6 +322,16 @@ router.post("/login/2fa", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Lỗi khi xác thực 2 lớp" });
   }
+});
+
+/**
+ * GET /api/auth/session-check — trang web hỏi định kỳ "phiên của tôi còn hiệu lực?".
+ * Admin bấm "Đăng xuất mọi phiên" / khoá tài khoản → các tab đang mở tự thoát
+ * trong vài giây thay vì vẫn hiện giao diện cũ. Gửi kèm header
+ * X-Background-Check: 1 để KHÔNG gia hạn thời gian chờ của phiên.
+ */
+router.get("/session-check", requireAuth, (req, res) => {
+  res.json({ ok: true });
 });
 
 /** GET /api/auth/me — kiểm tra token còn hợp lệ không, trả lại thông tin user */
