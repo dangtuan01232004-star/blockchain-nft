@@ -24,6 +24,7 @@ if (!process.env.JWT_SECRET) {
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
+const { parseAllowedOrigins, makeOriginChecker } = require("./services/corsPolicy");
 const { rateLimit } = require("express-rate-limit");
 const path = require("path");
 
@@ -78,36 +79,31 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
 }));
 
-const allowedOrigins = new Set(
-  (process.env.FRONTEND_ORIGIN || "")
-    .split(",")
-    .map((origin) => origin.trim())
-    .filter(Boolean)
-);
+const PRODUCTION = process.env.NODE_ENV === "production";
+const { allowed: allowedOrigins, rejected: rejectedOrigins } = parseAllowedOrigins(process.env.FRONTEND_ORIGIN, {
+  production: PRODUCTION,
+});
+for (const [value, why] of rejectedOrigins) {
+  console.warn(`⚠ CORS: bỏ qua FRONTEND_ORIGIN "${value}" — ${why}`);
+}
 if (allowedOrigins.size === 0) {
   console.warn(
-    process.env.NODE_ENV === "production"
+    PRODUCTION
       ? "FRONTEND_ORIGIN chưa được cấu hình; trình duyệt cross-origin sẽ không được CORS cho phép."
       : "FRONTEND_ORIGIN chưa được cấu hình; chỉ origin localhost mới được CORS cho phép trong môi trường phát triển."
   );
+} else {
+  console.log("CORS chỉ cho phép: " + [...allowedOrigins].join(", "));
 }
+const originAllowed = makeOriginChecker(allowedOrigins, { production: PRODUCTION });
 app.use(cors({
+  // KHÔNG dùng "*": chỉ trả Access-Control-Allow-Origin cho đúng tên miền trong danh sách
   origin(origin, callback) {
-    let isLocalDevelopmentOrigin = false;
-    if (allowedOrigins.size === 0 && process.env.NODE_ENV !== "production" && origin) {
-      try {
-        const url = new URL(origin);
-        isLocalDevelopmentOrigin =
-          url.protocol === "http:" &&
-          ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-      } catch {
-        isLocalDevelopmentOrigin = false;
-      }
-    }
-    callback(null, !origin || allowedOrigins.has(origin) || isLocalDevelopmentOrigin);
+    callback(null, originAllowed(origin));
   },
   // Cho trình duyệt gửi/nhận cookie đăng nhập HttpOnly giữa frontend và backend (khác tên miền)
   credentials: true,
+  methods: ["GET", "HEAD", "POST", "PATCH", "DELETE"],
   allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token", "X-Background-Check", "X-Device-Id", "X-Owner-Token"],
   maxAge: 600,
 }));

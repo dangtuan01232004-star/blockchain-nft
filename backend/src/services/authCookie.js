@@ -70,13 +70,10 @@ function safeEqual(a, b) {
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 }
 
+// Dùng CHUNG bộ lọc với CORS (services/corsPolicy.js) để 2 nơi không lệch nhau
 function allowedOrigins() {
-  return new Set(
-    String(process.env.FRONTEND_ORIGIN || "")
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-  );
+  const { parseAllowedOrigins } = require("./corsPolicy");
+  return parseAllowedOrigins(process.env.FRONTEND_ORIGIN, { production: process.env.NODE_ENV === "production" }).allowed;
 }
 
 function originAllowed(origin) {
