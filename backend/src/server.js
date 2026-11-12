@@ -25,6 +25,7 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const { parseAllowedOrigins, makeOriginChecker } = require("./services/corsPolicy");
+const { maskErrorBody } = require("./services/errorMask");
 const { rateLimit } = require("express-rate-limit");
 const path = require("path");
 
@@ -181,12 +182,11 @@ app.use("/api", apiLimiter);
 app.use((req, res, next) => {
   const json = res.json.bind(res);
   res.json = (body) => {
-    if (res.statusCode >= 500 && res.statusCode !== 503 && body && typeof body === "object" && body.error) {
-      const ref = crypto.randomBytes(4).toString("hex").toUpperCase();
-      console.error(`[Lỗi ${ref}] ${req.method} ${req.originalUrl} → ${body.error}`);
-      return json({ error: `Lỗi hệ thống, vui lòng thử lại sau. (Mã lỗi: ${ref})`, ref });
-    }
-    return json(body);
+    // 5xx: luôn thay bằng câu chung + mã lỗi. 4xx: thay nếu nội dung là lỗi kỹ thuật.
+    const safe = maskErrorBody(res.statusCode, body, (ref, original) =>
+      console.error(`[Lỗi ${ref}] ${res.statusCode} ${req.method} ${req.originalUrl} → ${original}`)
+    );
+    return json(safe || body);
   };
   next();
 });
@@ -222,15 +222,18 @@ app.get("/health", (req, res) => res.json({ status: "ok" }));
 
 // API không tồn tại → 404 dạng JSON (không lộ trang lỗi mặc định của Express)
 app.use("/api", (req, res) => res.status(404).json({ error: "Không tìm thấy API" }));
+// Đường dẫn lạ ngoài /api: trả JSON gọn thay cho trang lỗi mặc định "Cannot GET /..." của Express
+app.use((req, res) => res.status(404).json({ error: "Không tìm thấy" }));
 
 // Lỗi không bắt được (JSON sai cú pháp, file quá lớn, lỗi lập trình...) → KHÔNG trả stack trace
-// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, next) => {
   if (err && err.type === "entity.parse.failed") return res.status(400).json({ error: "Dữ liệu gửi lên không đúng định dạng JSON" });
   if (err && (err.type === "entity.too.large" || err.code === "LIMIT_FILE_SIZE")) {
     return res.status(413).json({ error: "Dữ liệu/tệp gửi lên quá lớn" });
   }
+  // Lỗi lập trình / thư viện: chỉ ghi log, ra ngoài là câu chung + mã lỗi (qua lớp che ở trên)
   console.error("Lỗi không xử lý:", err);
+  if (res.headersSent) return next(err);
   res.status(500).json({ error: "internal" });
 });
 
