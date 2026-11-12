@@ -33,6 +33,7 @@ const { sendTelegram } = require("../services/alerts");
 const { trackFailedLogin } = require("../services/loginGuard");
 const ipBlock = require("../services/ipBlock");
 const authCookie = require("../services/authCookie");
+const { asId } = require("../services/queryGuard");
 
 const router = express.Router();
 
@@ -440,8 +441,10 @@ router.get("/me/security-notices", requireAuth, async (req, res) => {
 
 /** POST /api/auth/me/security-notices/ack — "Đúng là tôi" */
 router.post("/me/security-notices/ack", requireAuth, async (req, res) => {
-  const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids : [];
-  for (const id of ids) {
+  const ids = Array.isArray(req.body && req.body.ids) ? req.body.ids.slice(0, 50) : [];
+  for (const raw of ids) {
+    const id = asId(raw); // chặn {"$ne": ""} lọt vào điều kiện truy vấn
+    if (!id) continue;
     const s = await Session.findById(id);
     if (s && String(s.userId) === String(req.dbUser._id)) await Session.updateOne({ _id: id }, { acknowledged: true });
   }
@@ -455,7 +458,7 @@ router.post("/me/security-notices/ack", requireAuth, async (req, res) => {
  * body: { sessionId } — phiên lạ bị nghi
  */
 router.post("/me/not-me", requireAuth, async (req, res) => {
-  const sid = req.body && req.body.sessionId;
+  const sid = asId(req.body && req.body.sessionId);
   let detail = "";
   if (sid) {
     const s = await Session.findById(sid);
@@ -612,7 +615,12 @@ async function consumeChallenge(credential, purpose) {
   } catch {
     throw new Error("Dữ liệu passkey không hợp lệ");
   }
-  const doc = challenge ? await WebauthnChallenge.findById(challenge) : null;
+  // clientDataJSON do trình duyệt gửi lên (đã mã hoá base64 nên bộ lọc dò
+  // lỗ hổng không nhìn thấy) → "challenge" có thể bị sửa thành object
+  // {"$ne": ""} để khớp/xoá thử thách của NGƯỜI KHÁC. Chỉ nhận chuỗi.
+  challenge = asId(challenge);
+  if (!challenge) throw new Error("Dữ liệu passkey không hợp lệ");
+  const doc = await WebauthnChallenge.findById(challenge);
   if (doc) await WebauthnChallenge.deleteOne({ _id: challenge });
   if (!doc || doc.purpose !== purpose || new Date(doc.expiresAt) < new Date()) {
     throw new Error("Yêu cầu passkey đã hết hạn hoặc đã được dùng — thử lại");

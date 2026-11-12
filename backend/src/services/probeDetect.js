@@ -42,17 +42,19 @@ function safeDecode(s) {
 }
 
 /** Duyệt object: trả về [đường dẫn, giá trị] của mọi chuỗi + phát hiện key bắt đầu bằng $ */
-function* walk(obj, path = "", depth = 0) {
+function* walk(obj, path = "", depth = 0, secret = false) {
   if (depth > 6 || obj === null || obj === undefined) return;
   if (typeof obj === "string") {
-    yield [path, obj];
+    if (!secret) yield [path, obj]; // không soi/ghi lộ nội dung trường bí mật
     return;
   }
   if (typeof obj !== "object") return;
   for (const [k, v] of Object.entries(obj)) {
-    if (SECRET_KEYS.test(k)) continue;
-    if (k.startsWith("$")) yield [`${path}.${k}`, k]; // {"username":{"$ne":""}}
-    yield* walk(v, path ? `${path}.${k}` : k, depth + 1);
+    const p = path ? `${path}.${k}` : k;
+    // Key bắt đầu bằng $ là toán tử MongoDB → luôn bắt, KỂ CẢ khi nằm trong
+    // trường bí mật: {"password": {"$ne": ""}} trước đây bị bỏ qua.
+    if (k.startsWith("$")) yield [p, k, "nosql_key"];
+    yield* walk(v, p, depth + 1, secret || SECRET_KEYS.test(k));
   }
 }
 
@@ -60,8 +62,14 @@ function inspect(req) {
   const ua = String(req.headers["user-agent"] || "");
   if (SCANNER_UA.test(ua)) return { cat: "Công cụ quét tự động", where: "User-Agent", sample: ua };
   const sources = [["URL", safeDecode(req.originalUrl)]];
-  for (const [p, v] of walk(req.query)) sources.push([`query.${p}`, safeDecode(v)]);
-  for (const [p, v] of walk(req.body)) sources.push([`body.${p}`, String(v)]);
+  for (const [p, v, kind] of walk(req.query)) {
+    if (kind === "nosql_key") return { cat: "NoSQL injection", where: `query.${p}`, sample: v };
+    sources.push([`query.${p}`, safeDecode(v)]);
+  }
+  for (const [p, v, kind] of walk(req.body)) {
+    if (kind === "nosql_key") return { cat: "NoSQL injection", where: `body.${p}`, sample: v };
+    sources.push([`body.${p}`, String(v)]);
+  }
   for (const [where, text] of sources) {
     for (const r of RULES) {
       if (r.re.test(text)) return { cat: r.cat, where, sample: text };
