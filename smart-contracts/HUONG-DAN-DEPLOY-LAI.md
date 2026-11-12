@@ -106,6 +106,13 @@ git push
 - **Demo:** mở trang **Mua hàng**, gõ `<script>alert(1)</script>` vào ô tìm kiếm rồi Enter → trang báo *"Yêu cầu chứa nội dung có dấu hiệu tấn công…"*, điện thoại admin rung. Thử thêm `' OR '1'='1` và `../../etc/passwd` → lần thứ 3 IP bị chặn, vào khung **IP đang bị chặn** bấm **Bỏ chặn**.
 - ⚠ Demo bằng **mạng 4G của điện thoại** hoặc **bỏ chặn ngay sau đó**, nếu không chính máy bạn bị chặn 1 giờ. Hoặc đặt `IP_ALLOWLIST` — khi đó IP của bạn vẫn bị cảnh báo nhưng không bị chặn.
 
+**Token đăng nhập trong cookie HttpOnly + chống CSRF**
+- Đăng nhập xong, token nằm trong **cookie HttpOnly** (`nft_sid`, `Secure; SameSite=None; Partitioned`) do máy chủ đặt — JavaScript **không đọc được**, nên dù lọt XSS cũng không lấy được token. Trang chỉ giữ tên/vai trò để hiển thị.
+- Mọi yêu cầu thay đổi dữ liệu phải có **Origin đúng tên miền frontend** và **mã CSRF** của phiên; thiếu một trong hai → 403 và ghi nhật ký *"nghi giả mạo (CSRF)"*.
+- Trình duyệt quá cũ không nhận cookie phân vùng → trang tự chuyển sang chế độ dự phòng (token chỉ giữ trong tab hiện tại).
+- ⚠ **Bắt buộc:** biến `FRONTEND_ORIGIN` trên Render phải **đúng y** địa chỉ Vercel, ví dụ `https://blockchain-nft-frontend.vercel.app` (không có dấu `/` ở cuối). Sai là mọi thao tác ghi bị chặn 403.
+- Sau khi cập nhật, mọi người **phải đăng nhập lại 1 lần** (token kiểu cũ bị xoá).
+
 **Đổi Telegram an toàn hơn**
 - **Đổi hoặc gỡ** Telegram đã liên kết giờ phải **xác thực lại bằng passkey / mã 2FA**. Lần liên kết đầu tiên thì không cần.
 - Khi Telegram bị đổi sang tài khoản Telegram khác, **Telegram CŨ nhận cảnh báo kèm nút "Không phải tôi"** (còn hiệu lực 24 giờ). Admin thấy cảnh báo *"Đổi Telegram sang tài khoản KHÁC"*.

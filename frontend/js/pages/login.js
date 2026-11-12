@@ -38,10 +38,14 @@ document.getElementById("authForm").addEventListener("submit", async (e) => {
   try {
     // Bước 2: đã qua mật khẩu, đang nhập mã 2FA
     const isMfaStep = mode === "login" && mfaToken;
+    const tokenFallback = !(await cookieSupport());
     const res = await fetch(`${API_BASE}/api/auth/${isMfaStep ? "login/2fa" : mode}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(isMfaStep ? { mfaToken, code: document.getElementById("mfaCode").value.trim() } : payload),
+      credentials: "include", // nhận cookie đăng nhập HttpOnly do máy chủ đặt
+      body: JSON.stringify(
+        isMfaStep ? { mfaToken, code: document.getElementById("mfaCode").value.trim(), tokenFallback } : { ...payload, tokenFallback }
+      ),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -84,9 +88,15 @@ document.getElementById("authForm").addEventListener("submit", async (e) => {
 });
 
 function finishLogin(data) {
-  localStorage.setItem("authToken", data.token);
-  localStorage.setItem("authUser", JSON.stringify(data.user));
+  Auth.saveLogin(data); // token ở trong cookie HttpOnly — trang không giữ token
   window.location.href = "admin.html";
+}
+
+// Trình duyệt có nhận cookie HttpOnly bên thứ ba không? (kiểm 1 lần mỗi trang)
+let cookieCheck = null;
+function cookieSupport() {
+  if (!cookieCheck) cookieCheck = Auth.cookiesWork();
+  return cookieCheck;
 }
 
 /** Đăng nhập bằng passkey — không có mfaToken = 1 chạm; có = bước 2 sau mật khẩu */
@@ -105,10 +115,12 @@ async function passkeyLogin(withMfaToken) {
     const options = await optRes.json();
     if (!optRes.ok) throw new Error(options.error || "Không tạo được yêu cầu passkey");
     const credential = await Passkey.get(options);
+    const tokenFallback = !(await cookieSupport()); // đã kiểm sẵn lúc mở trang
     const res = await fetch(`${API_BASE}/api/auth/login/passkey`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(withMfaToken ? { credential, mfaToken: withMfaToken } : { credential }),
+      credentials: "include",
+      body: JSON.stringify(withMfaToken ? { credential, mfaToken: withMfaToken, tokenFallback } : { credential, tokenFallback }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Đăng nhập passkey thất bại");
@@ -137,6 +149,9 @@ function resetMfa() {
 }
 
 // Nếu đã đăng nhập rồi, vào thẳng admin.html luôn không cần đăng nhập lại
-if (localStorage.getItem("authToken")) {
+// Kiểm trước khả năng nhận cookie (không làm chậm lúc bấm đăng nhập / passkey)
+cookieSupport();
+
+if (Auth.looksLoggedIn()) {
   window.location.href = "admin.html";
 }

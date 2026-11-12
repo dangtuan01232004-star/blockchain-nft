@@ -56,13 +56,9 @@ document.getElementById("logoutLink").addEventListener("click", async (e) => {
   e.preventDefault();
   // Thu hồi phiên trên server (token cũ không dùng lại được nữa), rồi mới xoá ở máy
   try {
-    await fetch(`${API_BASE}/api/auth/me/logout`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${localStorage.getItem("authToken")}` },
-    });
+    await Auth.fetch(`${API_BASE}/api/auth/me/logout`, { method: "POST" });
   } catch { /* vẫn đăng xuất ở máy */ }
-  localStorage.removeItem("authToken");
-  localStorage.removeItem("authUser");
+  Auth.clear();
   window.location.href = "login.html";
 });
 
@@ -73,14 +69,12 @@ function goToSection(name) {
 
 /** fetch có tự gắn header Authorization — dùng cho mọi API cần đăng nhập */
 async function authFetch(url, options = {}) {
-  const token = localStorage.getItem("authToken");
-  const headers = { ...(options.headers || {}), Authorization: `Bearer ${token}` };
-  const res = await fetch(url, { ...options, headers });
+  // Token nằm trong cookie HttpOnly (JS không đọc được) — Auth.fetch tự gửi cookie + mã CSRF
+  const res = await Auth.fetch(url, options);
   if (res.status === 401) {
     let reason = "Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.";
     try { reason = (await res.clone().json()).error || reason; } catch { /* giữ thông báo mặc định */ }
-    localStorage.removeItem("authToken");
-    localStorage.removeItem("authUser");
+    Auth.clear();
     alert(reason);
     window.location.href = "login.html";
     throw new Error("Chưa đăng nhập");
@@ -782,9 +776,9 @@ async function refreshSecurityBadge() {
   if (!authUser || authUser.role !== "admin") return;
   const badge = document.getElementById("securityBadge");
   try {
-    const res = await fetch(`${API_BASE}/api/auth/audit/summary`, {
+    const res = await Auth.fetch(`${API_BASE}/api/auth/audit/summary`, {
       // Đếm cảnh báo chạy nền → không được tính là "đang thao tác" (không gia hạn phiên)
-      headers: { Authorization: `Bearer ${localStorage.getItem("authToken")}`, "X-Background-Check": "1" },
+      headers: { "X-Background-Check": "1" },
     });
     if (!res.ok) return;
     const { open, critical } = await res.json();
@@ -805,7 +799,7 @@ setInterval(refreshSecurityBadge, 60 * 1000);
 // Kiểm tra mỗi 15 giây + mỗi khi quay lại tab. Không gia hạn thời gian chờ của phiên.
 let sessionCheckBusy = false;
 async function checkSessionAlive() {
-  if (sessionCheckBusy || !localStorage.getItem("authToken")) return;
+  if (sessionCheckBusy || !Auth.looksLoggedIn()) return;
   sessionCheckBusy = true;
   try {
     await authFetch(`${API_BASE}/api/auth/session-check`, { headers: { "X-Background-Check": "1" } });
@@ -1731,8 +1725,7 @@ async function loadSessions() {
 document.getElementById("logoutAllBtn").addEventListener("click", async () => {
   if (!window.confirm("Đăng xuất khỏi TẤT CẢ thiết bị, kể cả thiết bị này?")) return;
   await authFetch(`${API_BASE}/api/auth/me/logout-all`, { method: "POST" });
-  localStorage.removeItem("authToken");
-  localStorage.removeItem("authUser");
+  Auth.clear();
   window.location.href = "login.html";
 });
 
@@ -1751,7 +1744,7 @@ document.getElementById("pwForm").addEventListener("submit", async (e) => {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error);
-    localStorage.setItem("authToken", data.token);
+    Auth.saveLogin(data); // phiên mới: cookie mới do máy chủ đặt + mã CSRF mới
     showStatus(statusEl, "Đã đổi mật khẩu. Mọi thiết bị khác đã bị đăng xuất.", true);
     e.target.reset();
     loadSessions();

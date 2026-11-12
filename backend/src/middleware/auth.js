@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const authCookie = require("../services/authCookie");
 const mongoose = require("mongoose");
 const User = require("../models/User");
 const { checkSession } = require("../services/sessions");
@@ -18,7 +19,11 @@ const { checkSession } = require("../services/sessions");
  */
 async function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
-  const token = header.startsWith("Bearer ") ? header.slice(7) : null;
+  const bearer = header.startsWith("Bearer ") ? header.slice(7) : null;
+  // Ưu tiên cookie HttpOnly; Bearer chỉ dùng cho chế độ dự phòng (trình duyệt chặn cookie)
+  const cookieToken = authCookie.readCookie(req, authCookie.COOKIE);
+  const token = cookieToken || bearer;
+  req.authVia = cookieToken ? "cookie" : "bearer";
 
   if (!token) {
     return res.status(401).json({ error: "Chưa đăng nhập — thiếu token xác thực." });
@@ -43,8 +48,30 @@ async function requireAuth(req, res, next) {
     if (!user || user.disabled || (payload.tv ?? 0) !== (user.tokenVersion ?? 0)) {
       return res.status(401).json({ error: "Phiên đăng nhập không còn hiệu lực — vui lòng đăng nhập lại." });
     }
+    // CHỐNG CSRF: xác thực bằng cookie (trình duyệt tự gửi kèm) → yêu cầu thay đổi
+    // dữ liệu phải đến từ đúng frontend VÀ có mã CSRF của phiên. Kiểm tra TRƯỚC khi
+    // đụng tới phiên để trang lạ không làm "gia hạn" phiên được.
+    if (req.authVia === "cookie") {
+      const problem = authCookie.csrfProblem(req, payload.sid);
+      if (problem) {
+        require("../services/alerts")
+          .securityEvent({
+            type: "csrf_blocked",
+            severity: "warning",
+            message: `Chặn yêu cầu ${req.method} ${req.originalUrl} nghi giả mạo (CSRF): ${problem}`,
+            user,
+            ip: req.ip,
+            dedupeKey: `csrf:${user._id}:${Math.floor(Date.now() / 600000)}`,
+          })
+          .catch(() => {});
+        return res.status(403).json({ error: "Yêu cầu bị chặn vì không đến từ trang hợp lệ (CSRF). Tải lại trang rồi thử lại.", code: "CSRF" });
+      }
+    }
     const check = await checkSession(payload, req);
-    if (!check.ok) return res.status(401).json({ error: check.reason });
+    if (!check.ok) {
+      if (req.authVia === "cookie") authCookie.clearAuthCookie(req, res);
+      return res.status(401).json({ error: check.reason });
+    }
     req.authSession = check.session;
     req.dbUser = user;
     req.user = { id: String(user._id), username: user.username, role: user.role };

@@ -106,6 +106,10 @@ app.use(cors({
     }
     callback(null, !origin || allowedOrigins.has(origin) || isLocalDevelopmentOrigin);
   },
+  // Cho trình duyệt gửi/nhận cookie đăng nhập HttpOnly giữa frontend và backend (khác tên miền)
+  credentials: true,
+  allowedHeaders: ["Content-Type", "Authorization", "X-CSRF-Token", "X-Background-Check", "X-Device-Id", "X-Owner-Token"],
+  maxAge: 600,
 }));
 
 const loginLimiter = rateLimit({

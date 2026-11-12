@@ -32,6 +32,7 @@ const webauthn = require("../services/webauthn");
 const { sendTelegram } = require("../services/alerts");
 const { trackFailedLogin } = require("../services/loginGuard");
 const ipBlock = require("../services/ipBlock");
+const authCookie = require("../services/authCookie");
 
 const router = express.Router();
 
@@ -143,9 +144,9 @@ async function completeLogin(user, req, res) {
   user.lastLoginAt = new Date();
   user.lastLoginIp = req.ip || "";
   // IP mới được startSession() ghi riêng (mức Cảnh báo, báo admin) → ở đây chỉ ghi thông tin
-  const { token } = await startSession(user, req);
+  const { token, session } = await startSession(user, req);
   await securityEvent({ type: "login", severity: "info", message: "Đăng nhập thành công", user, ip: req.ip });
-  res.json({ token, user: publicUser(user) });
+  authCookie.sendLogin(req, res, { token, session, user: publicUser(user) });
 }
 
 function lockedResponse(user, res) {
@@ -212,8 +213,8 @@ router.post("/register", async (req, res) => {
       ip: req.ip,
     });
 
-    const { token } = await startSession(user, req);
-    res.status(201).json({ token, user: publicUser(user) });
+    const { token, session } = await startSession(user, req);
+    authCookie.sendLogin(req, res, { token, session, user: publicUser(user), status: 201 });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Lỗi khi đăng ký" });
@@ -390,9 +391,30 @@ router.delete("/me/sessions/:sid", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+/**
+ * Kiểm tra trình duyệt có nhận cookie HttpOnly bên thứ ba (phân vùng) không:
+ * POST /cookie-check đặt cookie thử, GET /cookie-check xem nó có quay lại không.
+ * Không nhận → frontend dùng chế độ dự phòng (Bearer trong sessionStorage).
+ */
+router.post("/cookie-check", (req, res) => {
+  authCookie.appendSetCookie(res, `${authCookie.TEST_COOKIE}=1; ${authCookie.cookieAttrs(req, 120)}`);
+  res.json({ ok: true });
+});
+router.get("/cookie-check", (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json({ cookies: authCookie.readCookie(req, authCookie.TEST_COOKIE) === "1" });
+});
+
+/** GET /api/auth/csrf — mã CSRF của phiên hiện tại (trang lạ không đọc được nhờ CORS) */
+router.get("/csrf", requireAuth, (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json({ csrfToken: req.authVia === "cookie" ? authCookie.csrfFor(req.authSession._id) : null, authMode: req.authVia });
+});
+
 /** POST /api/auth/me/logout — đăng xuất phiên hiện tại */
 router.post("/me/logout", requireAuth, async (req, res) => {
   await revokeSession(req.authSession._id, "logout");
+  authCookie.clearAuthCookie(req, res);
   res.json({ ok: true });
 });
 
@@ -401,6 +423,7 @@ router.post("/me/logout-all", requireAuth, async (req, res) => {
   await User.updateOne({ _id: req.user.id }, { $inc: { tokenVersion: 1 } });
   await revokeAllSessions(req.dbUser._id, "logout_all");
   await securityEvent({ type: "logout_all", severity: "info", message: "Tự đăng xuất mọi phiên", user: req.dbUser, ip: req.ip });
+  authCookie.clearAuthCookie(req, res);
   res.json({ ok: true });
 });
 
@@ -481,8 +504,8 @@ router.post("/me/password", requireAuth, async (req, res) => {
     await user.save();
     await revokeAllSessions(user._id, "password_changed");
     await securityEvent({ type: "password_changed", severity: "warning", message: "Đổi mật khẩu — mọi phiên cũ đã bị đăng xuất", user, ip: req.ip });
-    const { token } = await startSession(user, req);
-    res.json({ token, user: publicUser(user) });
+    const { token, session } = await startSession(user, req);
+    authCookie.sendLogin(req, res, { token, session, user: publicUser(user) });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Lỗi khi đổi mật khẩu" });
