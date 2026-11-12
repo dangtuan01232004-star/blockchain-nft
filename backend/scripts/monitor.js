@@ -16,7 +16,9 @@
  *   CONTRACT_ADDRESS          (mặc định đọc từ src/data/contract.json)
  *   MINT_ALERT_THRESHOLD=20   (số lần mint của 1 ví trong 1 lần quét → cảnh báo)
  *   LOG_CHUNK_BLOCKS=10       (Alchemy gói free giới hạn eth_getLogs ~10 block/lần)
- *   MAX_BLOCKS_PER_RUN=500    (nếu bị bỏ xa quá, chỉ quét 500 block gần nhất và cảnh báo)
+ *   MAX_BLOCKS_PER_RUN=10000  (~33 giờ trên Sepolia; GitHub hay chạy lịch trễ hàng giờ nên
+ *                              mỗi lần chạy QUÉT BÙ toàn bộ phần bị lỡ theo từng đoạn nhỏ;
+ *                              chỉ khi bị bỏ xa hơn mức này mới bỏ qua phần cũ và cảnh báo)
  *
  * Chạy tay: cd backend && node scripts/monitor.js
  */
@@ -28,8 +30,10 @@ const { ethers } = require("ethers");
 const User = require("../src/models/User");
 const { securityEvent } = require("../src/services/alerts");
 
-const CHUNK = Number(process.env.LOG_CHUNK_BLOCKS || 10);
-const MAX_BLOCKS = Number(process.env.MAX_BLOCKS_PER_RUN || 500);
+// Số block mỗi lần gọi eth_getLogs. Thử đoạn lớn trước cho nhanh; nhà cung cấp RPC
+// giới hạn khoảng (vd. Alchemy gói miễn phí chỉ 10 block) thì tự thu nhỏ.
+let CHUNK = Number(process.env.LOG_CHUNK_BLOCKS || 2000);
+const MAX_BLOCKS = Number(process.env.MAX_BLOCKS_PER_RUN || 10000);
 const MINT_THRESHOLD = Number(process.env.MINT_ALERT_THRESHOLD || 20);
 
 const stateSchema = new mongoose.Schema({ _id: String, lastBlock: Number }, { timestamps: true });
@@ -97,9 +101,20 @@ async function main() {
 
   console.log(`Quét block ${from} → ${latest} của ${contractAddress}`);
   const logs = [];
-  for (let start = from; start <= latest; start += CHUNK) {
+  for (let start = from; start <= latest; ) {
     const end = Math.min(start + CHUNK - 1, latest);
-    logs.push(...(await provider.getLogs({ address: contractAddress, fromBlock: start, toBlock: end })));
+    try {
+      logs.push(...(await provider.getLogs({ address: contractAddress, fromBlock: start, toBlock: end })));
+      start = end + 1;
+    } catch (err) {
+      const msg = String((err && (err.shortMessage || err.message)) || "");
+      if (CHUNK > 10 && /range|limit|too many|exceed|block/i.test(msg)) {
+        CHUNK = CHUNK > 500 ? 500 : 10; // RPC giới hạn khoảng block → thu nhỏ rồi thử lại
+        console.log(`RPC giới hạn khoảng getLogs → dùng đoạn ${CHUNK} block`);
+        continue;
+      }
+      throw err;
+    }
   }
 
   const mintsByWallet = new Map();
