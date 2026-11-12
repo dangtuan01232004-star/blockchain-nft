@@ -339,8 +339,8 @@ function renderResult(data) {
   }
   if (data.scan && data.scan.suspicious) {
     warnings.push(
-      `Mã QR này đã được quét từ ${data.scan.distinctDevices} thiết bị khác nhau (${data.scan.totalScans} lượt) — ` +
-      `nhiều bất thường so với một sản phẩm vật lý duy nhất. Có thể mã QR đã bị sao chép sang hàng giả khác.`
+      `Sản phẩm này ĐÃ CÓ CHỦ, nhưng sau đó mã QR vẫn bị quét từ ${data.scan.distinctDevices} thiết bị khác — ` +
+      `bất thường với một món hàng đã bán. Có thể mã QR đã bị in lên hàng giả: nếu bạn đang định mua món này, hãy cẩn thận.`
     );
   }
   if (data.security && data.security.paused) {

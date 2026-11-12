@@ -32,6 +32,7 @@ const webauthn = require("../services/webauthn");
 const { sendTelegram } = require("../services/alerts");
 const { trackFailedLogin } = require("../services/loginGuard");
 const loginLockout = require("../services/loginLockout");
+const TelegramChange = require("../models/TelegramChange");
 const ipBlock = require("../services/ipBlock");
 const authCookie = require("../services/authCookie");
 const { asId } = require("../services/queryGuard");
@@ -994,6 +995,77 @@ async function requireStepUpForTelegram(req, res) {
   return { ok: true, full };
 }
 
+const TG_CHANGE_MINUTES = 10;
+const TG_ACTION_VI = { unlink: "GỠ liên kết Telegram", relink: "ĐỔI sang Telegram khác" };
+
+/**
+ * Gỡ / đổi Telegram đã liên kết phải được CHÍNH Telegram hiện tại duyệt.
+ * Trả { ok:true } khi đã có duyệt hợp lệ cho đúng phiên + thao tác này (và
+ * đánh dấu đã dùng). Ngược lại trả 202 (đang chờ) hoặc 403 (bị từ chối).
+ */
+async function requireTelegramOwnerApproval(req, res, full, action) {
+  const sid = String(req.authSession._id);
+  const now = new Date();
+  const last = await TelegramChange.findOne({ userId: full._id, sessionId: sid, action }).sort({ createdAt: -1 });
+
+  if (last && last.status === "approved" && new Date(last.expiresAt) > now) {
+    // Đổi trạng thái nguyên tử: 1 lần duyệt chỉ dùng được đúng 1 lần
+    const used = await TelegramChange.findOneAndUpdate({ _id: last._id, status: "approved" }, { status: "used" });
+    if (used) return { ok: true };
+  }
+  if (last && last.status === "denied" && new Date(last.expiresAt) > now) {
+    res.status(403).json({ code: "TELEGRAM_CHANGE_DENIED", error: "Yêu cầu đã bị TỪ CHỐI trên Telegram của chủ tài khoản." });
+    return { ok: false };
+  }
+  if (last && last.status === "pending" && new Date(last.expiresAt) > now) {
+    res.status(202).json({ code: "TELEGRAM_CHANGE_PENDING", requestId: last._id, minutes: TG_CHANGE_MINUTES });
+    return { ok: false };
+  }
+
+  const id = crypto.randomBytes(12).toString("hex");
+  await TelegramChange.create({
+    _id: id,
+    userId: full._id,
+    sessionId: sid,
+    action,
+    ip: req.ip,
+    expiresAt: new Date(Date.now() + TG_CHANGE_MINUTES * 60 * 1000),
+  });
+  await sendTelegram(
+    `🔐 YÊU CẦU ${TG_ACTION_VI[action]} của tài khoản "${full.username}".\n` +
+      `IP: ${req.ip}\n\n` +
+      "Nếu đúng là bạn, bấm ✅ Cho phép. Nếu KHÔNG phải bạn, bấm 🚫 — thiết bị đó bị đăng xuất ngay và quản trị viên được báo.\n" +
+      `(Hết hạn sau ${TG_CHANGE_MINUTES} phút.)`,
+    {
+      chatId: full.telegramChatId,
+      buttons: [
+        [{ text: "✅ Cho phép", callback_data: `tgok:${id}` }],
+        [{ text: "🚫 Không phải tôi", callback_data: `tgno:${id}` }],
+      ],
+    }
+  ).catch(() => {});
+  await securityEvent({
+    type: "telegram_change_requested",
+    severity: "warning",
+    message: `Yêu cầu ${TG_ACTION_VI[action]} — đang chờ chính Telegram hiện tại duyệt`,
+    user: full,
+    ip: req.ip,
+  });
+  res.status(202).json({ code: "TELEGRAM_CHANGE_PENDING", requestId: id, minutes: TG_CHANGE_MINUTES });
+  return { ok: false };
+}
+
+/** GET /api/auth/me/telegram/change/:id — trạng thái yêu cầu (chỉ chủ + đúng phiên) */
+router.get("/me/telegram/change/:id", requireAuth, async (req, res) => {
+  const id = asId(req.params.id);
+  const r = id ? await TelegramChange.findById(id) : null;
+  if (!r || String(r.userId) !== String(req.dbUser._id) || r.sessionId !== String(req.authSession._id)) {
+    return res.json({ status: "not_found" });
+  }
+  if (r.status === "pending" && new Date(r.expiresAt) < new Date()) return res.json({ status: "expired" });
+  res.json({ status: r.status });
+});
+
 router.post("/me/telegram/link", requireAuth, async (req, res) => {
   const bot = process.env.TELEGRAM_BOT_USERNAME;
   if (!process.env.TELEGRAM_BOT_TOKEN || !bot) {
@@ -1001,6 +1073,10 @@ router.post("/me/telegram/link", requireAuth, async (req, res) => {
   }
   const gate = await requireStepUpForTelegram(req, res);
   if (!gate.ok) return;
+  if (gate.full.telegramChatId) {
+    const ap = await requireTelegramOwnerApproval(req, res, gate.full, "relink");
+    if (!ap.ok) return;
+  }
   const code = crypto.randomBytes(12).toString("hex");
   await User.updateOne(
     { _id: req.dbUser._id },
@@ -1013,6 +1089,10 @@ router.post("/me/telegram/link", requireAuth, async (req, res) => {
 router.delete("/me/telegram", requireAuth, async (req, res) => {
   const gate = await requireStepUpForTelegram(req, res);
   if (!gate.ok) return;
+  if (gate.full.telegramChatId) {
+    const ap = await requireTelegramOwnerApproval(req, res, gate.full, "unlink");
+    if (!ap.ok) return;
+  }
   const old = gate.full.telegramChatId;
   await User.updateOne(
     { _id: req.dbUser._id },
@@ -1024,7 +1104,7 @@ router.delete("/me/telegram", requireAuth, async (req, res) => {
       { chatId: old, buttons: [[{ text: "🚫 Không phải tôi — khoá tài khoản", callback_data: `notme:${req.authSession._id}` }]] }
     ).catch(() => {});
   }
-  await securityEvent({ type: "telegram_unlinked", severity: "warning", message: "Huỷ liên kết Telegram nhận cảnh báo (đã xác thực lại)", user: req.dbUser, ip: req.ip });
+  await securityEvent({ type: "telegram_unlinked", severity: "warning", message: "Huỷ liên kết Telegram nhận cảnh báo (đã xác thực lại + chính Telegram cũ đã cho phép)", user: req.dbUser, ip: req.ip });
   res.json({ ok: true });
 });
 
@@ -1247,6 +1327,33 @@ router.patch("/users/:id/disable", requireAuth, requireAdmin, async (req, res) =
 });
 
 /** POST /api/auth/users/:id/revoke-sessions — đăng xuất mọi phiên của tài khoản */
+/**
+ * POST /api/auth/users/:id/telegram-reset — admin gỡ Telegram cho người dùng
+ * đã MẤT Telegram cũ (không thể tự bấm duyệt). Admin phải xác minh danh tính
+ * ngoài hệ thống trước; mọi phiên của tài khoản bị đăng xuất cho chắc.
+ */
+router.post("/users/:id/telegram-reset", requireAuth, requireAdmin, async (req, res) => {
+  const id = asId(req.params.id);
+  const user = id ? await User.findById(id) : null;
+  if (!user) return res.status(404).json({ error: "Không tìm thấy tài khoản" });
+  const old = user.telegramChatId;
+  await User.updateOne(
+    { _id: user._id },
+    { telegramChatId: "", telegramPrevChatId: old || "", telegramPrevUntil: new Date(Date.now() + 24 * 3600 * 1000), $inc: { tokenVersion: 1 } }
+  );
+  if (old) {
+    await sendTelegram(`⚠️ Quản trị viên vừa gỡ Telegram này khỏi tài khoản "${user.username}" theo yêu cầu khôi phục.`, { chatId: old }).catch(() => {});
+  }
+  await securityEvent({
+    type: "telegram_reset_by_admin",
+    severity: "warning",
+    message: `Admin ${req.dbUser.username} gỡ Telegram của tài khoản (người dùng mất Telegram cũ) — đã đăng xuất mọi phiên`,
+    user,
+    ip: req.ip,
+  });
+  res.json({ ok: true });
+});
+
 router.post("/users/:id/revoke-sessions", requireAuth, requireAdmin, async (req, res) => {
   const user = await User.findByIdAndUpdate(req.params.id, { $inc: { tokenVersion: 1 } }, { new: true }).select(
     PRIVATE_FIELDS

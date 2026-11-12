@@ -5,6 +5,7 @@ const Session = require("../models/Session");
 const { reportNotMe } = require("../services/sessions");
 const { securityEvent } = require("../services/alerts");
 const MintApproval = require("../models/MintApproval");
+const TelegramChange = require("../models/TelegramChange");
 const { revokeSession } = require("../services/sessions");
 
 /**
@@ -143,6 +144,56 @@ router.post("/webhook", async (req, res) => {
             `🚫 Đã TỪ CHỐI phát hành ${ap.productCode} và đăng xuất thiết bị lạ (IP ${ap.ip}). Quản trị viên đã được báo.\n` +
             "Nên đổi mật khẩu ngay. Nếu nghi lộ cả ví MetaMask, báo quản trị viên để khoá ví trên blockchain.",
           reply_markup: { inline_keyboard: [[{ text: "🔒 Khoá luôn tài khoản", callback_data: `notme:${ap.sessionId}` }]] },
+        });
+      }
+      return;
+    }
+
+    // 4. Duyệt GỠ / ĐỔI Telegram: chỉ chính Telegram đang liên kết mới bấm được
+    if (cb && typeof cb.data === "string" && /^tg(ok|no):/.test(cb.data)) {
+      const approve = cb.data.startsWith("tgok:");
+      const id = cb.data.slice(5);
+      const chatId = String((cb.message && cb.message.chat && cb.message.chat.id) || (cb.from && cb.from.id));
+      const rq = await TelegramChange.findById(id);
+      const user = rq ? await User.findById(rq.userId) : null;
+      if (!user || user.telegramChatId !== chatId) {
+        await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Không xác minh được tài khoản.", show_alert: true });
+        return;
+      }
+      if (rq.status !== "pending" || new Date(rq.expiresAt) < new Date()) {
+        await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Yêu cầu đã được xử lý hoặc đã hết hạn.", show_alert: true });
+        return;
+      }
+      const what = rq.action === "unlink" ? "gỡ liên kết Telegram" : "đổi sang Telegram khác";
+      await TelegramChange.updateOne({ _id: id, status: "pending" }, { status: approve ? "approved" : "denied", decidedAt: new Date() });
+      if (approve) {
+        await securityEvent({
+          type: "telegram_change_approved",
+          severity: "info",
+          message: `Chủ tài khoản CHO PHÉP ${what} qua Telegram`,
+          user,
+          ip: rq.ip,
+        });
+        await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Đã cho phép." });
+        await tg("sendMessage", { chat_id: chatId, text: `✅ Đã cho phép ${what}. Quay lại trang web để hoàn tất.` });
+      } else {
+        await revokeSession(rq.sessionId, "telegram_change_denied").catch(() => {});
+        await securityEvent({
+          type: "telegram_change_denied",
+          severity: "critical",
+          message:
+            `Chủ tài khoản TỪ CHỐI yêu cầu ${what} từ IP ${rq.ip} — đã đăng xuất thiết bị đó. ` +
+            "Kẻ lạ đã qua được mật khẩu + 2FA: cân nhắc khoá tài khoản.",
+          user,
+          ip: rq.ip,
+        });
+        await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Đã từ chối và đăng xuất thiết bị đó." });
+        await tg("sendMessage", {
+          chat_id: chatId,
+          text:
+            `🚫 Đã CHẶN yêu cầu ${what} và đăng xuất thiết bị lạ (IP ${rq.ip}). Telegram này VẪN đang nhận cảnh báo.\n` +
+            "Kẻ đó đã biết mật khẩu và mã 2FA — nên đổi mật khẩu và đặt lại 2FA ngay.",
+          reply_markup: { inline_keyboard: [[{ text: "🔒 Khoá luôn tài khoản", callback_data: `notme:${rq.sessionId}` }]] },
         });
       }
       return;

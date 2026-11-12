@@ -362,6 +362,7 @@ async function loadUsers() {
           ${canApprove ? `<button class="btn btn-primary approve-btn" data-id="${esc(u._id)}" style="font-size:0.8rem; padding:6px 12px">Cấp quyền</button>` : ""}
           ${isSelf ? "" : `<button class="btn btn-outline disable-btn" data-id="${esc(u._id)}" data-disabled="${u.disabled ? "1" : "0"}" style="font-size:0.8rem; padding:6px 12px">${u.disabled ? "Mở khoá" : "Khoá tài khoản"}</button>`}
           ${isSelf ? "" : `<button class="btn btn-outline sessions-btn" data-id="${esc(u._id)}" style="font-size:0.8rem; padding:6px 12px">Đăng xuất mọi phiên</button>`}
+          ${isSelf ? "" : `<button class="btn btn-outline tgreset-btn" data-id="${esc(u._id)}" style="font-size:0.8rem; padding:6px 12px" title="Chỉ dùng khi chủ tài khoản MẤT Telegram cũ và đã xác minh danh tính">Gỡ Telegram (mất máy)</button>`}
         </td>
       `;
       tbody.appendChild(tr);
@@ -373,6 +374,9 @@ async function loadUsers() {
     });
     tbody.querySelectorAll(".disable-btn").forEach((btn) => {
       btn.addEventListener("click", () => toggleDisableUser(byId.get(btn.dataset.id), btn));
+    });
+    tbody.querySelectorAll(".tgreset-btn").forEach((btn) => {
+      btn.addEventListener("click", () => resetTelegram(byId.get(btn.dataset.id), btn));
     });
     tbody.querySelectorAll(".sessions-btn").forEach((btn) => {
       btn.addEventListener("click", () => revokeSessions(byId.get(btn.dataset.id), btn));
@@ -442,6 +446,25 @@ async function toggleDisableUser(user, btn) {
     });
     if (!res.ok) throw new Error((await res.json()).error || "Thao tác thất bại");
     await loadUsers();
+  } catch (err) {
+    alert(err.message);
+    btn.disabled = false;
+  }
+}
+
+async function resetTelegram(user, btn) {
+  if (
+    !window.confirm(
+      `Gỡ Telegram của ${user.username}?\n\nChỉ làm khi chủ tài khoản đã MẤT Telegram cũ và bạn đã xác minh đúng người ` +
+        "(gọi điện / gặp trực tiếp). Mọi phiên của tài khoản sẽ bị đăng xuất."
+    )
+  )
+    return;
+  btn.disabled = true;
+  try {
+    const res = await authFetch(`${API_BASE}/api/auth/users/${user._id}/telegram-reset`, { method: "POST" });
+    if (!res.ok) throw new Error((await res.json()).error || "Thao tác thất bại");
+    btn.textContent = "Đã gỡ ✓";
   } catch (err) {
     alert(err.message);
     btn.disabled = false;
@@ -1207,7 +1230,10 @@ async function requestMintAuthorization(body, retried = false) {
 }
 
 /** Hộp "Đang chờ duyệt trên Telegram" — hỏi máy chủ mỗi 2 giây tới khi Cho phép / Từ chối / hết hạn */
-function waitTelegramApproval(id, minutes) {
+function waitTelegramApproval(id, minutes, opts = {}) {
+  const statusUrl = opts.statusUrl || `${API_BASE}/api/products/mint-approval/${encodeURIComponent(id)}`;
+  const intro = opts.intro || "Bạn đang phát hành từ <b>thiết bị / mạng lạ</b>.";
+  const what = opts.what || "phát hành";
   return new Promise((resolve, reject) => {
     const wrap = document.createElement("div");
     wrap.style.cssText = "position:fixed;inset:0;z-index:99997;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:16px";
@@ -1217,7 +1243,7 @@ function waitTelegramApproval(id, minutes) {
     box.style.cssText = "background:#fff;max-width:420px;width:100%;border-radius:14px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.3);text-align:center";
     box.innerHTML = `<div style="font-size:40px;line-height:1">📲</div>
       <h3 style="margin:8px 0 6px;font-size:18px">Duyệt trên Telegram</h3>
-      <p style="margin:0 0 10px;color:#475569;font-size:14px">Bạn đang phát hành từ <b>thiết bị / mạng lạ</b>. Mở Telegram và bấm <b>✅ Cho phép</b> trong tin nhắn vừa gửi.</p>
+      <p style="margin:0 0 10px;color:#475569;font-size:14px">${intro} Mở Telegram và bấm <b>✅ Cho phép</b> trong tin nhắn vừa gửi.</p>
       <p id="tgWaitLeft" style="margin:0 0 14px;font-size:13px;color:#64748b"></p>
       <button type="button" class="btn btn-outline" id="tgWaitCancel">Huỷ</button>`;
     wrap.appendChild(box);
@@ -1225,18 +1251,18 @@ function waitTelegramApproval(id, minutes) {
     const deadline = Date.now() + minutes * 60 * 1000;
     let stopped = false;
     const finish = (fn, v) => { stopped = true; clearInterval(timer); wrap.remove(); fn(v); };
-    box.querySelector("#tgWaitCancel").addEventListener("click", () => finish(reject, new Error("Đã huỷ — chưa phát hành.")));
+    box.querySelector("#tgWaitCancel").addEventListener("click", () => finish(reject, new Error(`Đã huỷ — chưa ${what}.`)));
     const tick = async () => {
       if (stopped) return;
       const left = Math.max(0, Math.round((deadline - Date.now()) / 1000));
       box.querySelector("#tgWaitLeft").textContent = `Đang chờ… còn ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
       try {
-        const r = await authFetch(`${API_BASE}/api/products/mint-approval/${encodeURIComponent(id)}`);
+        const r = await authFetch(statusUrl);
         const j = await r.json();
         if (j.status === "approved") return finish(resolve);
-        if (j.status === "denied") return finish(reject, new Error("Yêu cầu phát hành đã bị TỪ CHỐI trên Telegram."));
+        if (j.status === "denied") return finish(reject, new Error(`Yêu cầu ${what} đã bị TỪ CHỐI trên Telegram.`));
         if (j.status === "expired" || j.status === "not_found" || left === 0) {
-          return finish(reject, new Error("Hết thời gian chờ duyệt trên Telegram — thử phát hành lại."));
+          return finish(reject, new Error(`Hết thời gian chờ duyệt trên Telegram — thử ${what} lại.`));
         }
       } catch {
         /* phiên bị thu hồi (bấm Từ chối) → authFetch đã chuyển về trang đăng nhập */
@@ -1633,17 +1659,40 @@ function renderTelegramState() {
   document.getElementById("tgUnlinkBtn").hidden = !linked;
 }
 
+/**
+ * Gọi API gỡ / đổi Telegram. Nếu đã có Telegram, máy chủ trả 202 và gửi nút
+ * "Cho phép / Không phải tôi" về CHÍNH Telegram đó → chờ chủ bấm rồi gọi lại.
+ */
+async function telegramChangeRequest(url, method, stepUpTitle, what) {
+  let res = await authFetch(url, { method });
+  let data = await res.json().catch(() => ({}));
+  if (!res.ok && data.code === "STEP_UP_REQUIRED") {
+    if (!(await stepUpDialog(stepUpTitle))) throw new Error("Đã huỷ.");
+    res = await authFetch(url, { method });
+    data = await res.json().catch(() => ({}));
+  }
+  if (res.status === 202 && data.code === "TELEGRAM_CHANGE_PENDING") {
+    await waitTelegramApproval(data.requestId, data.minutes || 10, {
+      statusUrl: `${API_BASE}/api/auth/me/telegram/change/${encodeURIComponent(data.requestId)}`,
+      intro: `Để ${what}, cần <b>chính Telegram đang liên kết</b> đồng ý (chống kẻ gian cắt kênh cảnh báo).`,
+      what,
+    });
+    res = await authFetch(url, { method });
+    data = await res.json().catch(() => ({}));
+  }
+  if (!res.ok || res.status === 202) throw new Error(data.error || `Không ${what} được`);
+  return data;
+}
+
 document.getElementById("tgLinkBtn").addEventListener("click", async () => {
   const statusEl = document.getElementById("tgStatus");
   try {
-    let res = await authFetch(`${API_BASE}/api/auth/me/telegram/link`, { method: "POST" });
-    let data = await res.json();
-    if (!res.ok && data.code === "STEP_UP_REQUIRED") {
-      if (!(await stepUpDialog("Xác thực lại để đổi Telegram nhận cảnh báo"))) throw new Error("Đã huỷ.");
-      res = await authFetch(`${API_BASE}/api/auth/me/telegram/link`, { method: "POST" });
-      data = await res.json();
-    }
-    if (!res.ok) throw new Error(data.error);
+    const data = await telegramChangeRequest(
+      `${API_BASE}/api/auth/me/telegram/link`,
+      "POST",
+      "Xác thực lại để đổi Telegram nhận cảnh báo",
+      "đổi Telegram"
+    );
     window.open(data.url, "_blank", "noopener");
     statusEl.className = "status-msg show ok";
     statusEl.innerHTML =
@@ -1656,14 +1705,11 @@ document.getElementById("tgLinkBtn").addEventListener("click", async () => {
 
 document.getElementById("tgUnlinkBtn").addEventListener("click", async () => {
   if (!window.confirm("Huỷ liên kết Telegram? Bạn sẽ không nhận cảnh báo đăng nhập lạ nữa.")) return;
-  let res = await authFetch(`${API_BASE}/api/auth/me/telegram`, { method: "DELETE" });
-  let data = await res.json().catch(() => ({}));
-  if (!res.ok && data.code === "STEP_UP_REQUIRED") {
-    if (!(await stepUpDialog("Xác thực lại để gỡ Telegram"))) return;
-    res = await authFetch(`${API_BASE}/api/auth/me/telegram`, { method: "DELETE" });
-    data = await res.json().catch(() => ({}));
+  try {
+    await telegramChangeRequest(`${API_BASE}/api/auth/me/telegram`, "DELETE", "Xác thực lại để gỡ Telegram", "gỡ Telegram");
+  } catch (err) {
+    showStatus(document.getElementById("tgStatus"), err.message, false);
   }
-  if (!res.ok) alert(data.error || "Không gỡ được liên kết");
   loadAccount();
 });
 
