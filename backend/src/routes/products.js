@@ -15,6 +15,7 @@ const {
   recoverOwnership,
 } = require("../services/claimCodes");
 const { recordScan, evaluateSuspicion } = require("../services/scanGuard");
+const { asId } = require("../services/queryGuard");
 const { securityEvent } = require("../services/alerts");
 const { issueMintAuthorization, getApprovalStatus } = require("../services/mintAuth");
 
@@ -210,7 +211,7 @@ function readChainProduct(tokenId) {
 
 router.get("/verify/:tokenId", async (req, res) => {
   const { tokenId } = req.params;
-  const deviceId = req.query.deviceId || req.headers["x-device-id"] || "unknown";
+  const deviceId = asId(req.query.deviceId) || asId(req.headers["x-device-id"]) || "unknown";
   if (!/^\d{1,12}$/.test(String(tokenId))) {
     return res.status(404).json({ tokenId, found: false, authentic: false, message: "Mã sản phẩm không hợp lệ." });
   }
@@ -220,14 +221,15 @@ router.get("/verify/:tokenId", async (req, res) => {
     // Ghi nhận lượt quét này rồi đánh giá xem có dấu hiệu QR bị sao chép không
     // (cùng 1 tokenId nhưng bị quét từ quá nhiều thiết bị khác nhau — xem
     // backend/src/services/scanGuard.js).
-    await recordScan(tokenId, deviceId, req.ip, req.headers["user-agent"]);
-    const scan = await evaluateSuspicion(tokenId);
     let claim = { status: "unknown" };
     try {
       claim = await getClaimStatus(tokenId, req.headers["x-owner-token"]);
     } catch (err) {
       console.error("Không đọc được trạng thái mã cào:", err.message);
     }
+    // Lượt quét của chính chủ (trình duyệt đã kích hoạt mã cào) không tính
+    if (claim.status !== "owner") await recordScan(tokenId, deviceId, req.ip, req.headers["user-agent"]);
+    const scan = await evaluateSuspicion(tokenId, claim);
 
     res.json({
       tokenId,
