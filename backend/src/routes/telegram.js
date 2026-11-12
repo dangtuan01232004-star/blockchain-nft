@@ -6,6 +6,8 @@ const { reportNotMe } = require("../services/sessions");
 const { securityEvent } = require("../services/alerts");
 const MintApproval = require("../models/MintApproval");
 const TelegramChange = require("../models/TelegramChange");
+const ipBlock = require("../services/ipBlock");
+const AuditLog = require("../models/AuditLog");
 const { revokeSession } = require("../services/sessions");
 
 /**
@@ -128,6 +130,7 @@ router.post("/webhook", async (req, res) => {
         await tg("sendMessage", { chat_id: chatId, text: `✅ Đã cho phép phát hành ${ap.productCode}.` });
       } else {
         await revokeSession(ap.sessionId, "telegram_denied").catch(() => {});
+        const blocked = await ipBlock.blockByOwner(ap.ip, user.username, `từ chối phát hành ${ap.productCode} trên Telegram`);
         await securityEvent({
           type: "mint_denied_telegram",
           severity: "critical",
@@ -141,7 +144,9 @@ router.post("/webhook", async (req, res) => {
         await tg("sendMessage", {
           chat_id: chatId,
           text:
-            `🚫 Đã TỪ CHỐI phát hành ${ap.productCode} và đăng xuất thiết bị lạ (IP ${ap.ip}). Quản trị viên đã được báo.\n` +
+            `🚫 Đã TỪ CHỐI phát hành ${ap.productCode} và đăng xuất thiết bị lạ (IP ${ap.ip}).` +
+            (blocked ? ` IP này đã bị CHẶN ${ipBlock.ownerBlockLabel()}.` : "") +
+            " Quản trị viên đã được báo.\n" +
             "Nên đổi mật khẩu ngay. Nếu nghi lộ cả ví MetaMask, báo quản trị viên để khoá ví trên blockchain.",
           reply_markup: { inline_keyboard: [[{ text: "🔒 Khoá luôn tài khoản", callback_data: `notme:${ap.sessionId}` }]] },
         });
@@ -178,6 +183,7 @@ router.post("/webhook", async (req, res) => {
         await tg("sendMessage", { chat_id: chatId, text: `✅ Đã cho phép ${what}. Quay lại trang web để hoàn tất.` });
       } else {
         await revokeSession(rq.sessionId, "telegram_change_denied").catch(() => {});
+        const blocked = await ipBlock.blockByOwner(rq.ip, user.username, `từ chối ${what} trên Telegram`);
         await securityEvent({
           type: "telegram_change_denied",
           severity: "critical",
@@ -191,11 +197,49 @@ router.post("/webhook", async (req, res) => {
         await tg("sendMessage", {
           chat_id: chatId,
           text:
-            `🚫 Đã CHẶN yêu cầu ${what} và đăng xuất thiết bị lạ (IP ${rq.ip}). Telegram này VẪN đang nhận cảnh báo.\n` +
+            `🚫 Đã CHẶN yêu cầu ${what} và đăng xuất thiết bị lạ (IP ${rq.ip}).` +
+            (blocked ? ` IP này đã bị CHẶN ${ipBlock.ownerBlockLabel()}.` : "") +
+            " Telegram này VẪN đang nhận cảnh báo.\n" +
             "Kẻ đó đã biết mật khẩu và mã 2FA — nên đổi mật khẩu và đặt lại 2FA ngay.",
           reply_markup: { inline_keyboard: [[{ text: "🔒 Khoá luôn tài khoản", callback_data: `notme:${rq.sessionId}` }]] },
         });
       }
+      return;
+    }
+
+    // 5. Tin "đúng mật khẩu nhưng sai 2FA" → "Không phải tôi — chặn IP này"
+    if (cb && typeof cb.data === "string" && cb.data.startsWith("ipno:")) {
+      const ip = cb.data.slice(5);
+      const chatId = String((cb.message && cb.message.chat && cb.message.chat.id) || (cb.from && cb.from.id));
+      const user = await User.findOne({ telegramChatId: chatId });
+      // Chỉ chặn IP thật sự vừa thử đăng nhập vào CHÍNH tài khoản này (không cho chặn IP tuỳ ý)
+      const seen =
+        user &&
+        (await AuditLog.findOne({
+          userId: user._id,
+          ip,
+          type: "mfa_failed_password_ok",
+          createdAt: { $gte: new Date(Date.now() - 24 * 3600 * 1000) },
+        }));
+      if (!seen) {
+        await tg("answerCallbackQuery", { callback_query_id: cb.id, text: "Không xác minh được yêu cầu (hoặc đã quá 24 giờ).", show_alert: true });
+        return;
+      }
+      const blocked = await ipBlock.blockByOwner(ip, user.username, "chủ tài khoản báo KHÔNG PHẢI TÔI (đúng mật khẩu, sai 2FA)");
+      await securityEvent({
+        type: "mfa_failed_not_me",
+        severity: "critical",
+        message: `Chủ tài khoản xác nhận lần nhập ĐÚNG mật khẩu từ IP ${ip} KHÔNG PHẢI họ → mật khẩu đã lộ` + (blocked ? `, đã chặn IP ${ipBlock.ownerBlockLabel()}` : ""),
+        user,
+        ip,
+      });
+      await tg("answerCallbackQuery", { callback_query_id: cb.id, text: blocked ? "Đã chặn IP." : "Đã ghi nhận." });
+      await tg("sendMessage", {
+        chat_id: chatId,
+        text:
+          (blocked ? `🚫 Đã CHẶN IP ${ip} trong ${ipBlock.ownerBlockLabel()}. ` : `Không chặn được IP ${ip} (IP nội bộ được bảo vệ). `) +
+          "Quản trị viên đã được báo.\nKẻ đó ĐÃ BIẾT mật khẩu của bạn — hãy đổi mật khẩu ngay (họ đổi mạng là vào thử lại được).",
+      });
       return;
     }
 

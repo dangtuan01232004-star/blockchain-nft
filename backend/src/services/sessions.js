@@ -194,7 +194,16 @@ async function reportNotMe(user, { sessionId, via, ip }) {
   let detail = "";
   if (sessionId) {
     const s = await Session.findById(sessionId);
-    if (s) detail = ` Phiên bị nghi: IP ${s.ip}, ${shortUA(s.userAgent)}, lúc ${fmtTime(s.createdAt)}.`;
+    if (s) {
+      detail = ` Phiên bị nghi: IP ${s.ip}, ${shortUA(s.userAgent)}, lúc ${fmtTime(s.createdAt)}.`;
+      // Chặn luôn IP kẻ lạ — trừ khi trùng mạng với chính người đang báo (tránh tự chặn mình)
+      if (s.ip && s.ip !== ip) {
+        const ipBlock = require("./ipBlock");
+        if (await ipBlock.blockByOwner(s.ip, user.username, "chủ tài khoản báo KHÔNG PHẢI TÔI")) {
+          detail += ` Đã chặn IP ${s.ip} trong ${ipBlock.ownerBlockLabel()}.`;
+        }
+      }
+    }
   }
   await securityEvent({
     type: "not_me_reported",

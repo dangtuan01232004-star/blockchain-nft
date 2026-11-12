@@ -75,10 +75,10 @@ function publicUser(user) {
 }
 
 /** Gửi tin Telegram riêng cho CHÍNH CHỦ tài khoản (nếu đã liên kết) */
-async function notifyOwner(user, text) {
+async function notifyOwner(user, text, buttons) {
   if (!user.telegramChatId) return false;
   try {
-    await sendTelegram(text, { chatId: user.telegramChatId });
+    await sendTelegram(text, { chatId: user.telegramChatId, buttons });
     return true;
   } catch {
     return false;
@@ -108,7 +108,8 @@ async function registerFailure(user, req, what) {
         user,
         `⚠️ Có người vừa nhập ĐÚNG mật khẩu tài khoản "${user.username}" nhưng bị chặn ở bước xác thực 2 lớp.\n` +
           `IP: ${req.ip}\n\n` +
-          "Nếu không phải bạn: mật khẩu của bạn có thể đã bị lộ — hãy ĐỔI MẬT KHẨU NGAY."
+          "Nếu không phải bạn: bấm nút dưới để chặn IP này, rồi ĐỔI MẬT KHẨU NGAY.",
+        [[{ text: "🚫 Không phải tôi — chặn IP này", callback_data: `ipno:${req.ip}` }]]
       );
     }
   }

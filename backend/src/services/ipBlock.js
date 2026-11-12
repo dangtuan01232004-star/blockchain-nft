@@ -78,11 +78,26 @@ async function blockIp(ip, { minutes = AUTO_MINUTES, reason = "", auto = false, 
   await securityEvent({
     type: auto ? "ip_auto_blocked" : "ip_blocked",
     severity: "warning",
-    message: `${auto ? "TỰ ĐỘNG chặn" : `Admin ${by} chặn`} IP ${ip} trong ${minutes >= 1440 ? Math.round(minutes / 1440) + " ngày" : minutes >= 60 ? Math.round(minutes / 60) + " giờ" : minutes + " phút"}: ${reason}`,
+    message: `${auto ? "TỰ ĐỘNG chặn" : /^chủ/i.test(by) ? `${by} chặn` : `Admin ${by} chặn`} IP ${ip} trong ${minutes >= 1440 ? Math.round(minutes / 1440) + " ngày" : minutes >= 60 ? Math.round(minutes / 60) + " giờ" : minutes + " phút"}: ${reason}`,
     ip,
     dedupeKey: auto ? `ipauto:${ip}:${Math.floor(Date.now() / (AUTO_MINUTES * 60 * 1000))}` : undefined,
   });
   return true;
+}
+
+const OWNER_DENY_MINUTES = Number(process.env.OWNER_DENY_BLOCK_MINUTES || 1440);
+
+/**
+ * Chủ tài khoản bấm "Không phải tôi" → chặn IP của thiết bị lạ (mặc định 24 giờ).
+ * Không chặn vĩnh viễn vì IP có thể dùng chung (wifi trường, mạng 4G);
+ * IP_ALLOWLIST không bao giờ bị chặn; admin bỏ chặn được ở Bảo mật & khẩn cấp.
+ */
+function blockByOwner(ip, username, reason) {
+  return blockIp(ip, { minutes: OWNER_DENY_MINUTES, reason, by: `chủ tài khoản "${username}"` }).catch(() => false);
+}
+function ownerBlockLabel() {
+  const m = OWNER_DENY_MINUTES;
+  return m >= 1440 ? `${Math.round(m / 1440)} ngày` : m >= 60 ? `${Math.round(m / 60)} giờ` : `${m} phút`;
 }
 
 async function unblockIp(ip, by = "") {
@@ -103,4 +118,6 @@ async function listBlocked() {
   }));
 }
 
-module.exports = { ipBlockMiddleware, blockIp, unblockIp, listBlocked, isValidIp, AUTO_MINUTES, _cache: () => cache };
+module.exports = {
+  blockByOwner,
+  ownerBlockLabel, ipBlockMiddleware, blockIp, unblockIp, listBlocked, isValidIp, AUTO_MINUTES, _cache: () => cache };
