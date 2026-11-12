@@ -31,6 +31,7 @@ const WebauthnChallenge = require("../models/WebauthnChallenge");
 const webauthn = require("../services/webauthn");
 const { sendTelegram } = require("../services/alerts");
 const { trackFailedLogin } = require("../services/loginGuard");
+const loginLockout = require("../services/loginLockout");
 const ipBlock = require("../services/ipBlock");
 const authCookie = require("../services/authCookie");
 const { asId } = require("../services/queryGuard");
@@ -83,38 +84,16 @@ async function notifyOwner(user, text) {
   }
 }
 
-/** Ghi nhận sai mật khẩu / sai mã 2FA — đủ ngưỡng thì khoá tạm tài khoản */
+/**
+ * Ghi nhận sai mật khẩu / sai mã 2FA. KHÔNG khoá tài khoản (để chính chủ ở
+ * thiết bị khác vẫn vào được) — thay vào đó chặn IP có leo thang qua
+ * services/loginLockout.js, và cảnh báo chủ tài khoản qua Telegram.
+ */
 async function registerFailure(user, req, what) {
-  user.failedLogins = (user.failedLogins || 0) + 1;
   const isMfa = what === "mã 2FA";
-  if (user.failedLogins >= MAX_FAILED_LOGINS) {
-    user.lockUntil = new Date(Date.now() + LOCK_MINUTES * 60000);
-    user.failedLogins = 0;
-    await user.save();
-    const told = await notifyOwner(
-      user,
-      `🔒 Tài khoản "${user.username}" vừa bị KHOÁ ${LOCK_MINUTES} phút vì nhập sai ${what} ${MAX_FAILED_LOGINS} lần.\n` +
-        `IP: ${req.ip}\n\n` +
-        (isMfa
-          ? "Người này đã nhập ĐÚNG mật khẩu của bạn → mật khẩu đã bị lộ. Hãy đổi mật khẩu ngay khi mở khoá."
-          : "Nếu không phải bạn, có người đang dò mật khẩu. Hãy đặt mật khẩu mạnh và bật xác thực 2 lớp / passkey.")
-    );
-    await securityEvent({
-      type: "account_locked",
-      severity: user.role === "admin" || isMfa ? "critical" : "warning",
-      message:
-        `Tài khoản bị khoá ${LOCK_MINUTES} phút sau ${MAX_FAILED_LOGINS} lần sai ${what} — có thể đang bị dò` +
-        (told ? " (đã báo chủ tài khoản qua Telegram)" : " (chủ tài khoản chưa liên kết Telegram)"),
-      user,
-      ip: req.ip,
-    });
-    return;
-  }
-  await user.save();
 
+  // Đúng mật khẩu nhưng sai 2FA = mật khẩu đã lộ → cảnh báo chủ ngay từ lần đầu
   if (isMfa) {
-    // Đã qua bước mật khẩu mà sai 2FA = MẬT KHẨU ĐÃ LỘ. Báo ngay từ lần sai đầu
-    // (mỗi tài khoản tối đa 1 cảnh báo / 15 phút, các lần sau chỉ ghi nhật ký).
     const fresh = await securityEvent({
       type: "mfa_failed_password_ok",
       severity: "warning",
@@ -130,18 +109,64 @@ async function registerFailure(user, req, what) {
           `IP: ${req.ip}\n\n` +
           "Nếu không phải bạn: mật khẩu của bạn có thể đã bị lộ — hãy ĐỔI MẬT KHẨU NGAY."
       );
-      return;
     }
-    await securityEvent({ type: "mfa_failed", severity: "info", message: "Sai mã 2FA", user, ip: req.ip });
+  }
+
+  // Chặn IP có leo thang (15 phút → 1 giờ → 24 giờ → vĩnh viễn). Tài khoản KHÔNG bị khoá.
+  const r = await loginLockout.recordFailure(req.ip, user.username);
+  if (r.distributed) {
+    await securityEvent({
+      type: "login_distributed",
+      severity: "critical",
+      message: `Tài khoản "${user.username}" đang bị dò mật khẩu PHÂN TÁN từ nhiều IP khác nhau (đổi IP để né chặn). Tài khoản không bị khoá để tránh gián đoạn chính chủ — nên đổi mật khẩu mạnh và bật 2FA/passkey.`,
+      user,
+      ip: req.ip,
+      dedupeKey: `distrib:${user._id}:${Math.floor(Date.now() / (15 * 60 * 1000))}`,
+    });
+    await notifyOwner(
+      user,
+      `🚨 Tài khoản "${user.username}" đang bị dò mật khẩu từ NHIỀU máy khác nhau.\n\n` +
+        "Tài khoản của bạn vẫn đăng nhập được bình thường. Hãy đổi mật khẩu mạnh và bật xác thực 2 lớp / passkey ngay."
+    );
+  }
+  if (r.blocked) {
+    await notifyOwner(
+      user,
+      `🔒 IP ${req.ip} vừa bị CHẶN ${r.label} vì nhập sai ${what} nhiều lần vào tài khoản "${user.username}".\n\n` +
+        (isMfa
+          ? "Người này đã nhập ĐÚNG mật khẩu của bạn → mật khẩu đã bị lộ. Hãy đổi mật khẩu ngay."
+          : "Tài khoản của bạn KHÔNG bị khoá — bạn vẫn đăng nhập được từ thiết bị/mạng khác.")
+    );
+    await securityEvent({
+      type: r.permanent ? "ip_blocked_permanent" : "account_bruteforce_blocked",
+      severity: user.role === "admin" || isMfa || r.permanent ? "critical" : "warning",
+      message:
+        `IP ${req.ip} bị chặn ${r.label} sau nhiều lần sai ${what} vào "${user.username}" — ` +
+        "tài khoản KHÔNG bị khoá, chính chủ ở thiết bị khác vẫn đăng nhập được" +
+        (r.permanent ? " (ĐÃ CHẶN VĨNH VIỄN — vào Bảo mật & khẩn cấp để bỏ chặn nếu nhầm)" : ""),
+      user,
+      ip: req.ip,
+    });
     return;
   }
-  await securityEvent({ type: "login_failed", severity: "info", message: `Sai ${what}`, user, ip: req.ip });
+  if (!isMfa) {
+    await securityEvent({
+      type: "login_failed",
+      severity: "info",
+      message: `Sai ${what} (còn ${r.remaining} lần trước khi IP bị chặn)`,
+      user,
+      ip: req.ip,
+    });
+  } else {
+    await securityEvent({ type: "mfa_failed", severity: "info", message: "Sai mã 2FA", user, ip: req.ip });
+  }
 }
 
 /** Hoàn tất đăng nhập: tạo phiên, báo IP mới, trả token */
 async function completeLogin(user, req, res) {
   user.failedLogins = 0;
   user.lockUntil = null;
+  loginLockout.clearFailures(req.ip, user.username);
   user.lastLoginAt = new Date();
   user.lastLoginIp = req.ip || "";
   // IP mới được startSession() ghi riêng (mức Cảnh báo, báo admin) → ở đây chỉ ghi thông tin
@@ -237,7 +262,6 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ error: "Sai username hoặc mật khẩu" });
     }
 
-    if (user.lockUntil && user.lockUntil > new Date()) return lockedResponse(user, res);
 
     const ok = await bcrypt.compare(String(password), user.passwordHash);
     if (!ok) {
@@ -292,7 +316,6 @@ router.post("/login/2fa", async (req, res) => {
     if (!user || user.disabled || !user.twoFactorEnabled || (payload.tv ?? 0) !== (user.tokenVersion ?? 0)) {
       return res.status(401).json({ error: "Không thể xác thực — vui lòng đăng nhập lại." });
     }
-    if (user.lockUntil && user.lockUntil > new Date()) return lockedResponse(user, res);
 
     const input = String(code || "").trim();
     let passed = false;
@@ -671,7 +694,6 @@ router.post("/me/step-up", requireAuth, async (req, res) => {
   const user = await User.findById(req.dbUser._id);
   const { code, credential } = req.body || {};
   try {
-    if (user.lockUntil && user.lockUntil > new Date()) return lockedResponse(user, res);
     let method = "";
     if (credential) {
       const ch = await consumeChallenge(credential, "stepup");
@@ -902,7 +924,6 @@ router.post("/login/passkey", async (req, res) => {
       await securityEvent({ type: "login_disabled_account", severity: "warning", message: "Đăng nhập passkey vào tài khoản đã bị khoá", user, ip: req.ip });
       return res.status(403).json({ error: "Tài khoản đã bị khoá. Liên hệ quản trị viên." });
     }
-    if (user.lockUntil && user.lockUntil > new Date()) return lockedResponse(user, res);
 
     user.passkeys = user.passkeys.map((p) => {
       const o = plainPasskey(p);
