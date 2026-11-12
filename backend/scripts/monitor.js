@@ -107,9 +107,21 @@ async function main() {
       logs.push(...(await provider.getLogs({ address: contractAddress, fromBlock: start, toBlock: end })));
       start = end + 1;
     } catch (err) {
-      const msg = String((err && (err.shortMessage || err.message)) || "");
-      if (CHUNK > 10 && /range|limit|too many|exceed|block/i.test(msg)) {
-        CHUNK = CHUNK > 500 ? 500 : 10; // RPC giới hạn khoảng block → thu nhỏ rồi thử lại
+      // ethers bọc lỗi RPC thành câu ngắn ("could not coalesce error") — phải đọc
+      // cả thông điệp gốc mới thấy "block range" và con số giới hạn.
+      const msg = [
+        err && err.shortMessage,
+        err && err.message,
+        err && err.error && err.error.message,
+        err && err.info && err.info.error && err.info.error.message,
+      ]
+        .filter(Boolean)
+        .join(" | ");
+      if (CHUNK > 1 && /range|limit|too many|exceed|block/i.test(msg)) {
+        // "…up to a 10 block range…" → dùng đúng con số RPC cho phép
+        const m = msg.match(/up to (?:a )?(\d+)\s*block/i);
+        const allowed = m ? Number(m[1]) : 0;
+        CHUNK = allowed > 0 && allowed < CHUNK ? allowed : CHUNK > 500 ? 500 : CHUNK > 10 ? 10 : 1;
         console.log(`RPC giới hạn khoảng getLogs → dùng đoạn ${CHUNK} block`);
         continue;
       }

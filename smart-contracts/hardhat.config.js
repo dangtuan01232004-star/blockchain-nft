@@ -22,6 +22,13 @@ module.exports = {
       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
     },
   },
+  // Verify mã nguồn lên Etherscan → Etherscan hiện tab Read/Write Contract.
+  // Lấy API key miễn phí tại https://etherscan.io/myapikey (1 key dùng cho cả Sepolia).
+  // Chạy: npx hardhat verify --network sepolia <ĐỊA_CHỈ_CONTRACT>
+  etherscan: {
+    apiKey: process.env.ETHERSCAN_API_KEY || "",
+  },
+  sourcify: { enabled: false },
   // Đo chi phí gas của từng hàm — phục vụ mục 3.4 "Đánh giá thực nghiệm"
   // trong đề cương. Chạy `npm run test:gas` để in ra bảng chi phí.
   gasReporter: {
